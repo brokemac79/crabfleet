@@ -1906,6 +1906,205 @@
         font-size: 13px;
       }
 
+      .openclaw-page {
+        display: grid;
+        gap: 18px;
+      }
+      .openclaw-toolbar {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 14px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--dashboard-surface);
+        padding: 16px 18px;
+      }
+      .openclaw-toolbar h2,
+      .workflow-section h2 {
+        margin: 5px 0 0;
+        color: var(--ink);
+        font-size: 18px;
+        font-weight: 720;
+      }
+      .openclaw-toolbar button,
+      .pr-row button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+      }
+      .openclaw-summary {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .workflow-banner {
+        border: 1px solid rgb(245 158 11 / 0.35);
+        border-radius: 8px;
+        background: rgb(245 158 11 / 0.08);
+        color: var(--ink);
+        padding: 10px 12px;
+        font-size: 13px;
+      }
+      .workflow-banner.error {
+        border-color: rgb(239 68 68 / 0.34);
+        background: rgb(239 68 68 / 0.1);
+      }
+      .openclaw-settings {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+        gap: 10px;
+        align-items: end;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 14px;
+      }
+      .openclaw-settings.skeleton {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .openclaw-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(300px, 0.42fr);
+        gap: 16px;
+        align-items: start;
+      }
+      .openclaw-main,
+      .openclaw-side,
+      .workflow-section {
+        min-width: 0;
+      }
+      .workflow-section {
+        display: grid;
+        gap: 12px;
+      }
+      .workflow-section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .queue-block,
+      .pr-row {
+        display: grid;
+        gap: 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 14px;
+      }
+      .queue-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: start;
+      }
+      .queue-head h3 {
+        margin: 0;
+        color: var(--ink);
+        font-size: 15px;
+        font-weight: 720;
+      }
+      .queue-head p,
+      .pr-detail {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .query-line {
+        min-width: 0;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel-2);
+        color: var(--muted);
+        padding: 7px 9px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+      }
+      .candidate-list,
+      .pr-list {
+        display: grid;
+        gap: 8px;
+      }
+      .candidate-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        min-height: 74px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel-2);
+        padding: 10px;
+      }
+      .candidate-main {
+        min-width: 0;
+        display: grid;
+        gap: 6px;
+      }
+      .candidate-main a,
+      .pr-row > a {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--ink);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .candidate-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+      .candidate-actions {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .candidate-actions button:first-child {
+        width: 36px;
+        padding: 0;
+      }
+      .chip.ok {
+        border-color: rgb(16 185 129 / 0.28);
+        background: rgb(16 185 129 / 0.12);
+        color: var(--success);
+      }
+      .chip.warn {
+        border-color: rgb(245 158 11 / 0.32);
+        background: rgb(245 158 11 / 0.1);
+        color: var(--warning);
+      }
+      .chip.danger {
+        border-color: rgb(239 68 68 / 0.34);
+        background: rgb(239 68 68 / 0.1);
+        color: #f87171;
+      }
+      .pr-monitor {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--dashboard-surface);
+        padding: 14px;
+      }
+      .pr-row {
+        background: var(--panel);
+      }
+      .handoff-box {
+        margin-top: 4px;
+      }
+      .handoff-box textarea {
+        min-height: 150px;
+        font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
       @keyframes infraDrift {
         0%,
         100% {
@@ -1953,6 +2152,15 @@
         }
         .dashboard-grid {
           grid-template-columns: 1fr;
+        }
+        .openclaw-grid {
+          grid-template-columns: 1fr;
+        }
+        .openclaw-settings {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .openclaw-settings button {
+          grid-column: 1 / -1;
         }
         .fleet-control-panel {
           grid-template-columns: 1fr;
@@ -2011,6 +2219,10 @@
         }
         .toolbar,
         .status-strip,
+        .openclaw-toolbar,
+        .openclaw-summary,
+        .openclaw-settings,
+        .candidate-row,
         .fleet-control-grid,
         .dev-identity-panel,
         .board,
@@ -2018,6 +2230,14 @@
         .form-grid,
         .session-head {
           grid-template-columns: 1fr;
+        }
+        .candidate-actions {
+          display: grid;
+          grid-template-columns: 40px minmax(0, 1fr);
+          width: 100%;
+        }
+        .candidate-actions button {
+          width: 100%;
         }
         .session-grid {
           grid-template-columns: 1fr;

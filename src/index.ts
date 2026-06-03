@@ -39,6 +39,24 @@ import {
 import { buildFleetState, type FleetSandboxPolicySummary, type FleetState } from "./fleet-state";
 import { githubRequestCanUseRepoCredential, matchesAnyHost } from "./sandbox-security";
 import {
+  buildOpenClawDiscordHandoff,
+  buildOpenClawIssuePrompt,
+  buildOpenClawIssueSearchQuery,
+  evaluateOpenClawGovernor,
+  normalizeGitHubRepo,
+  normalizeOpenClawPreferences,
+  openClawDefaultPreferences,
+  openClawDefaultRepo,
+  openClawIssueSignals,
+  openClawPrSignals,
+  queuesForOpenClawRole,
+  type OpenClawCandidate,
+  type OpenClawGovernor,
+  type OpenClawQueueDefinition,
+  type OpenClawRoleMode,
+  type OpenClawWorkflowPreferences,
+} from "./openclaw-workflow";
+import {
   APP_HTML,
   GHOSTTY_BROWSER_EXTERNAL_JS,
   GHOSTTY_WEB_JS,
@@ -90,6 +108,7 @@ type RuntimeEnv = Env & {
   OPENAI_API_KEY?: string;
   OPENAI_BASE_URL?: string;
   OPENAI_ORG_ID?: string;
+  OPENCLAW_WORKFLOW_REPO?: string;
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
 };
@@ -156,6 +175,64 @@ type GitHubIssuePayload = {
   user: { login: string } | null;
   updated_at: string;
   pull_request?: unknown;
+};
+
+type GitHubLabelPayload = {
+  name: string;
+};
+
+type GitHubSearchIssueItem = {
+  number: number;
+  title: string;
+  state: string;
+  html_url: string;
+  user: { login: string } | null;
+  labels: GitHubLabelPayload[];
+  created_at: string;
+  updated_at: string;
+  pull_request?: { url?: string; html_url?: string };
+};
+
+type GitHubSearchPayload<T> = {
+  total_count?: number;
+  items?: T[];
+};
+
+type GitHubPullRequestPayload = {
+  number: number;
+  title: string;
+  html_url: string;
+  state: string;
+  user: { login: string } | null;
+  head: { sha: string; ref: string; repo: { full_name: string } | null };
+  base: { ref: string };
+  draft?: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+type GitHubCheckRunPayload = {
+  name: string;
+  status: string;
+  conclusion: string | null;
+  html_url: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+};
+
+type GitHubCheckRunsPayload = {
+  total_count?: number;
+  check_runs?: GitHubCheckRunPayload[];
+};
+
+type GitHubCombinedStatusPayload = {
+  state: string;
+  statuses?: Array<{
+    state: string;
+    context: string;
+    target_url: string | null;
+    description: string | null;
+  }>;
 };
 
 type GitHubGraphqlRefPayload = {
@@ -573,6 +650,21 @@ type RepoWorkflowTable = {
   updated_at: number;
 };
 
+type OpenClawWorkflowPreferenceTable = {
+  subject: string;
+  role_mode: OpenClawRoleMode;
+  target_repo: string;
+  github_login: string | null;
+  active_open_pr_limit: number;
+  hard_open_pr_cap: number;
+  daily_usage_drop_limit: number;
+  max_parallel_workers: number;
+  weekly_remaining_baseline: number | null;
+  weekly_remaining_current: number | null;
+  usage_window_started_at: number | null;
+  updated_at: number;
+};
+
 type EventTable = {
   id: Generated<number>;
   card_id: string;
@@ -640,6 +732,7 @@ type Database = {
   interactive_session_events: InteractiveSessionEventTable;
   interactive_session_log_archives: InteractiveSessionLogArchiveTable;
   repo_workflows: RepoWorkflowTable;
+  openclaw_workflow_preferences: OpenClawWorkflowPreferenceTable;
   events: EventTable;
   audit_events: AuditEventTable;
   ssh_keys: SshKeyTable;
@@ -1172,6 +1265,8 @@ export default {
         url.pathname === "/app/fleet/" ||
         url.pathname === "/app/board" ||
         url.pathname === "/app/board/" ||
+        url.pathname === "/app/openclaw" ||
+        url.pathname === "/app/openclaw/" ||
         url.pathname === "/sessions" ||
         url.pathname === "/sessions/" ||
         url.pathname.startsWith("/sessions/") ||
@@ -1343,6 +1438,21 @@ async function api(request: Request, env: RuntimeEnv): Promise<Response> {
 
   if (request.method === "GET" && url.pathname === "/api/state") {
     return json(await readState(request, env, user));
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/openclaw/workflow") {
+    requireRole(user, "viewer");
+    return json(await readOpenClawWorkflow(request, env, user));
+  }
+
+  if (request.method === "PUT" && url.pathname === "/api/openclaw/preferences") {
+    requireRole(user, "viewer");
+    return json(await updateOpenClawPreferences(request, env, user));
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/openclaw/handoff") {
+    requireRole(user, "viewer");
+    return json(await createOpenClawHandoff(request));
   }
 
   if (request.method === "GET" && url.pathname === "/api/fleet") {
@@ -2229,6 +2339,480 @@ async function readFleetState(
     generatedAt: Date.now(),
     registryAvailable: policyResult.available,
   });
+}
+
+type OpenClawQueueResult = {
+  definition: OpenClawQueueDefinition;
+  query: string;
+  totalCount: number;
+  candidates: OpenClawCandidate[];
+  error: string | null;
+};
+
+type OpenClawCheckSummary = {
+  state: "unknown" | "green" | "pending" | "failing";
+  total: number;
+  failing: string[];
+  pending: string[];
+  timedOut: string[];
+  mantis: string | null;
+};
+
+type OpenClawPullRequestSummary = {
+  number: number;
+  title: string;
+  url: string;
+  author: string | null;
+  labels: string[];
+  branch: string | null;
+  headSha: string | null;
+  draft: boolean;
+  updatedAt: string | null;
+  signals: ReturnType<typeof openClawPrSignals>;
+  checks: OpenClawCheckSummary;
+};
+
+async function readOpenClawWorkflow(
+  request: Request,
+  env: RuntimeEnv,
+  user: User,
+): Promise<Record<string, unknown>> {
+  const url = new URL(request.url);
+  const preferences = await readOpenClawWorkflowPreferences(env, user);
+  const envRepo = normalizeGitHubRepo(env.OPENCLAW_WORKFLOW_REPO) || openClawDefaultRepo;
+  const repo =
+    normalizeGitHubRepo(url.searchParams.get("repo")) ||
+    normalizeGitHubRepo(preferences.targetRepo) ||
+    envRepo;
+  const githubLogin =
+    clean(url.searchParams.get("login"), 80) || preferences.githubLogin || user.login || null;
+  const effectivePreferences = normalizeOpenClawPreferences(
+    { ...preferences, targetRepo: repo, githubLogin },
+    preferences,
+  );
+  const token = await openClawWorkflowGitHubToken(request, env, repo);
+  const queues = queuesForOpenClawRole(effectivePreferences.roleMode);
+  const [queueResults, pullRequests] = await Promise.all([
+    Promise.all(queues.map((queue) => fetchOpenClawQueue(env, token, repo, queue))),
+    githubLogin
+      ? fetchOpenClawPullRequests(env, token, repo, githubLogin)
+      : Promise.resolve({ items: [], error: "GitHub login is not configured" }),
+  ]);
+  const baseGovernor = evaluateOpenClawGovernor(effectivePreferences, pullRequests.items.length);
+  const governor = pullRequests.error
+    ? {
+        ...baseGovernor,
+        canStartNewWork: false,
+        reasons: [...baseGovernor.reasons, `Open PR lookup failed: ${pullRequests.error}`],
+      }
+    : baseGovernor;
+  return {
+    preferences: effectivePreferences,
+    repo,
+    githubLogin,
+    generatedAt: Date.now(),
+    queues: queueResults,
+    pullRequests,
+    governor,
+    process: {
+      sourceIssueUrl: "https://github.com/openclaw/openclaw/issues/84599",
+      contributingUrl: `https://github.com/${repo}/blob/main/CONTRIBUTING.md`,
+      agentsUrl: `https://github.com/${repo}/blob/main/AGENTS.md`,
+      prTemplateUrl: `https://github.com/${repo}/blob/main/.github/pull_request_template.md`,
+      requiredCloseout: "Run local validation and codex review --base origin/main before handoff.",
+      trialMaintainerGuard: "Do not merge, land, squash, or enable automerge.",
+    },
+  };
+}
+
+async function openClawWorkflowGitHubToken(
+  request: Request,
+  env: RuntimeEnv,
+  repo: string,
+): Promise<string | undefined> {
+  const sessionToken = await sessionGitHubToken(request, env);
+  if (sessionToken) return sessionToken;
+  if (!env.GITHUB_TOKEN || !(await repoUsesWorkerCredential(env, repo))) return undefined;
+  return env.GITHUB_TOKEN;
+}
+
+async function repoUsesWorkerCredential(env: RuntimeEnv, repo: string): Promise<boolean> {
+  const row = await database(env)
+    .selectFrom("repos")
+    .select("repo")
+    .where("repo", "=", repo)
+    .where("enabled", "=", 1)
+    .executeTakeFirst();
+  return Boolean(row);
+}
+
+async function updateOpenClawPreferences(
+  request: Request,
+  env: RuntimeEnv,
+  user: User,
+): Promise<{ preferences: OpenClawWorkflowPreferences; governor: OpenClawGovernor }> {
+  const current = await readOpenClawWorkflowPreferences(env, user);
+  const body = await readJson<Partial<OpenClawWorkflowPreferences>>(request);
+  const preferences = normalizeOpenClawPreferences({ ...body, updatedAt: Date.now() }, current);
+  await writeOpenClawWorkflowPreferences(env, preferences);
+  await audit(
+    env,
+    user,
+    `openclaw workflow preferences updated repo=${preferences.targetRepo} role=${preferences.roleMode}`,
+    preferences.updatedAt,
+  );
+  return {
+    preferences,
+    governor: evaluateOpenClawGovernor(preferences, 0),
+  };
+}
+
+async function createOpenClawHandoff(request: Request): Promise<{ text: string }> {
+  return { text: buildOpenClawDiscordHandoff(await readJson(request)) };
+}
+
+async function readOpenClawWorkflowPreferences(
+  env: RuntimeEnv,
+  user: User,
+): Promise<OpenClawWorkflowPreferences> {
+  const now = Date.now();
+  const fallback: OpenClawWorkflowPreferences = {
+    ...openClawDefaultPreferences,
+    subject: user.subject,
+    targetRepo: normalizeGitHubRepo(env.OPENCLAW_WORKFLOW_REPO) || openClawDefaultRepo,
+    githubLogin: user.login,
+    updatedAt: now,
+  };
+  const row = await database(env)
+    .selectFrom("openclaw_workflow_preferences")
+    .selectAll()
+    .where("subject", "=", user.subject)
+    .executeTakeFirst();
+  if (!row) return fallback;
+  return normalizeOpenClawPreferences(
+    {
+      subject: row.subject,
+      roleMode: row.role_mode,
+      targetRepo: row.target_repo,
+      githubLogin: row.github_login,
+      activeOpenPrLimit: row.active_open_pr_limit,
+      hardOpenPrCap: row.hard_open_pr_cap,
+      dailyUsageDropLimit: row.daily_usage_drop_limit,
+      maxParallelWorkers: row.max_parallel_workers,
+      weeklyRemainingBaseline: row.weekly_remaining_baseline,
+      weeklyRemainingCurrent: row.weekly_remaining_current,
+      usageWindowStartedAt: row.usage_window_started_at,
+      updatedAt: row.updated_at,
+    },
+    fallback,
+  );
+}
+
+async function writeOpenClawWorkflowPreferences(
+  env: RuntimeEnv,
+  preferences: OpenClawWorkflowPreferences,
+): Promise<void> {
+  await database(env)
+    .insertInto("openclaw_workflow_preferences")
+    .values({
+      subject: preferences.subject,
+      role_mode: preferences.roleMode,
+      target_repo: preferences.targetRepo,
+      github_login: preferences.githubLogin,
+      active_open_pr_limit: preferences.activeOpenPrLimit,
+      hard_open_pr_cap: preferences.hardOpenPrCap,
+      daily_usage_drop_limit: preferences.dailyUsageDropLimit,
+      max_parallel_workers: preferences.maxParallelWorkers,
+      weekly_remaining_baseline: preferences.weeklyRemainingBaseline,
+      weekly_remaining_current: preferences.weeklyRemainingCurrent,
+      usage_window_started_at: preferences.usageWindowStartedAt,
+      updated_at: preferences.updatedAt,
+    })
+    .onConflict((oc) =>
+      oc.column("subject").doUpdateSet({
+        role_mode: preferences.roleMode,
+        target_repo: preferences.targetRepo,
+        github_login: preferences.githubLogin,
+        active_open_pr_limit: preferences.activeOpenPrLimit,
+        hard_open_pr_cap: preferences.hardOpenPrCap,
+        daily_usage_drop_limit: preferences.dailyUsageDropLimit,
+        max_parallel_workers: preferences.maxParallelWorkers,
+        weekly_remaining_baseline: preferences.weeklyRemainingBaseline,
+        weekly_remaining_current: preferences.weeklyRemainingCurrent,
+        usage_window_started_at: preferences.usageWindowStartedAt,
+        updated_at: preferences.updatedAt,
+      }),
+    )
+    .execute();
+}
+
+async function fetchOpenClawQueue(
+  env: RuntimeEnv,
+  token: string | undefined,
+  repo: string,
+  definition: OpenClawQueueDefinition,
+): Promise<OpenClawQueueResult> {
+  const now = Date.now();
+  const query = buildOpenClawIssueSearchQuery(repo, definition, now);
+  try {
+    const candidates: OpenClawCandidate[] = [];
+    let totalCount = 0;
+    for (let page = 1; page <= 3 && candidates.length < 6; page += 1) {
+      const payload = await githubSearchIssues<GitHubSearchIssueItem>(
+        env,
+        token,
+        query,
+        definition.sort,
+        definition.order,
+        30,
+        page,
+      );
+      totalCount = Math.max(totalCount, payload.total_count ?? 0);
+      const pageCandidates = (payload.items ?? [])
+        .filter((item) => !item.pull_request)
+        .map((item) => openClawCandidateFromSearchItem(item, definition.id))
+        .filter((candidate) => candidate.signals.ageGate !== "too-old");
+      candidates.push(...pageCandidates);
+      if ((payload.items ?? []).length < 30) break;
+    }
+    return {
+      definition,
+      query,
+      totalCount: totalCount || candidates.length,
+      candidates: candidates.slice(0, 6),
+      error: null,
+    };
+  } catch (error) {
+    return {
+      definition,
+      query,
+      totalCount: 0,
+      candidates: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function fetchOpenClawPullRequests(
+  env: RuntimeEnv,
+  token: string | undefined,
+  repo: string,
+  login: string,
+): Promise<{ items: OpenClawPullRequestSummary[]; error: string | null }> {
+  const query = `repo:${repo} is:pr is:open author:${login}`;
+  try {
+    const payload = await githubSearchIssues<GitHubSearchIssueItem>(
+      env,
+      token,
+      query,
+      "updated",
+      "desc",
+      20,
+    );
+    const items = await Promise.all(
+      (payload.items ?? [])
+        .filter((item) => Boolean(item.pull_request))
+        .map((item) => fetchOpenClawPullRequest(env, token, repo, item)),
+    );
+    return { items, error: null };
+  } catch (error) {
+    return { items: [], error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function fetchOpenClawPullRequest(
+  env: RuntimeEnv,
+  token: string | undefined,
+  repo: string,
+  item: GitHubSearchIssueItem,
+): Promise<OpenClawPullRequestSummary> {
+  const labels = item.labels.map((label) => label.name).filter(Boolean);
+  const signals = openClawPrSignals(labels);
+  try {
+    const pull = await githubApi<GitHubPullRequestPayload>(
+      token,
+      `/repos/${repo}/pulls/${item.number}`,
+    );
+    const checks = pull.head.sha
+      ? await fetchOpenClawCheckSummary(env, token, repo, pull.head.sha, signals)
+      : unknownCheckSummary(signals);
+    return {
+      number: item.number,
+      title: item.title,
+      url: item.html_url,
+      author: item.user?.login ?? null,
+      labels,
+      branch: pull.head.ref || null,
+      headSha: pull.head.sha || null,
+      draft: Boolean(pull.draft),
+      updatedAt: item.updated_at,
+      signals,
+      checks,
+    };
+  } catch {
+    return {
+      number: item.number,
+      title: item.title,
+      url: item.html_url,
+      author: item.user?.login ?? null,
+      labels,
+      branch: null,
+      headSha: null,
+      draft: false,
+      updatedAt: item.updated_at,
+      signals,
+      checks: unknownCheckSummary(signals),
+    };
+  }
+}
+
+async function fetchOpenClawCheckSummary(
+  env: RuntimeEnv,
+  token: string | undefined,
+  repo: string,
+  sha: string,
+  signals: ReturnType<typeof openClawPrSignals>,
+): Promise<OpenClawCheckSummary> {
+  try {
+    const [checkRuns, combined] = await Promise.all([
+      githubApi<GitHubCheckRunsPayload>(
+        token,
+        `/repos/${repo}/commits/${sha}/check-runs?per_page=100`,
+      ),
+      githubApi<GitHubCombinedStatusPayload>(token, `/repos/${repo}/commits/${sha}/status`),
+    ]);
+    return summarizeOpenClawChecks(checkRuns.check_runs ?? [], combined, signals);
+  } catch {
+    return unknownCheckSummary(signals);
+  }
+}
+
+function summarizeOpenClawChecks(
+  checkRuns: GitHubCheckRunPayload[],
+  combined: GitHubCombinedStatusPayload,
+  signals: ReturnType<typeof openClawPrSignals>,
+): OpenClawCheckSummary {
+  const failing = new Set<string>();
+  const pending = new Set<string>();
+  const timedOut = new Set<string>();
+  let mantis: string | null = signals.mantisRequested ? "requested" : null;
+  for (const run of checkRuns) {
+    const name = run.name || "check";
+    const status = run.status.toLowerCase();
+    const conclusion = (run.conclusion ?? "").toLowerCase();
+    if (name.toLowerCase().includes("mantis")) {
+      mantis = conclusion || status || "seen";
+    }
+    if (status !== "completed") {
+      pending.add(name);
+      continue;
+    }
+    if (conclusion === "timed_out") timedOut.add(name);
+    if (
+      ["failure", "cancelled", "timed_out", "action_required", "startup_failure"].includes(
+        conclusion,
+      )
+    ) {
+      failing.add(name);
+    }
+  }
+  for (const status of combined.statuses ?? []) {
+    if (status.state === "pending") pending.add(status.context);
+    if (["failure", "error"].includes(status.state)) failing.add(status.context);
+  }
+  const total = checkRuns.length + (combined.statuses?.length ?? 0);
+  const state =
+    failing.size > 0
+      ? "failing"
+      : pending.size > 0
+        ? "pending"
+        : total > 0 || combined.state === "success"
+          ? "green"
+          : "unknown";
+  return {
+    state,
+    total,
+    failing: [...failing].sort(),
+    pending: [...pending].sort(),
+    timedOut: [...timedOut].sort(),
+    mantis,
+  };
+}
+
+function unknownCheckSummary(signals: ReturnType<typeof openClawPrSignals>): OpenClawCheckSummary {
+  return {
+    state: "unknown",
+    total: 0,
+    failing: [],
+    pending: [],
+    timedOut: [],
+    mantis: signals.mantisRequested ? "requested" : null,
+  };
+}
+
+function openClawCandidateFromSearchItem(
+  item: GitHubSearchIssueItem,
+  queueId: string,
+): OpenClawCandidate {
+  const labels = item.labels.map((label) => label.name).filter(Boolean);
+  const candidate = {
+    number: item.number,
+    title: item.title,
+    url: item.html_url,
+    author: item.user?.login ?? null,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+    labels,
+    queueId,
+    signals: openClawIssueSignals(labels, item.created_at),
+  };
+  return { ...candidate, workPrompt: buildOpenClawIssuePrompt(candidate) };
+}
+
+async function githubSearchIssues<T>(
+  env: RuntimeEnv,
+  token: string | undefined,
+  query: string,
+  sort: "created" | "updated",
+  order: "asc" | "desc",
+  perPage: number,
+  page = 1,
+): Promise<GitHubSearchPayload<T>> {
+  const params = new URLSearchParams({
+    q: query,
+    sort,
+    order,
+    per_page: String(perPage),
+    page: String(page),
+  });
+  const path = `/search/issues?${params.toString()}`;
+  try {
+    return await githubApi<GitHubSearchPayload<T>>(token, path);
+  } catch (error) {
+    if (!(error instanceof GitHubApiError) || error.status !== 422 || !query.includes("-linked:pr"))
+      throw error;
+    const retryParams = new URLSearchParams({
+      q: query.replace(" -linked:pr", ""),
+      sort,
+      order,
+      per_page: String(perPage),
+      page: String(page),
+    });
+    return githubApi<GitHubSearchPayload<T>>(token, `/search/issues?${retryParams.toString()}`);
+  }
+}
+
+async function githubApi<T>(token: string | undefined, path: string): Promise<T> {
+  const response = await fetch(`https://api.github.com${path}`, {
+    headers: githubHeadersWithToken(token),
+  });
+  if (response.status === 403 || response.status === 429) {
+    throw serviceUnavailable("GitHub rate limit reached; retry later");
+  }
+  if (!response.ok) {
+    throw new GitHubApiError(response.status);
+  }
+  return response.json<T>();
 }
 
 async function createInteractiveSession(
@@ -6625,6 +7209,13 @@ function githubHeaders(env?: RuntimeEnv): HeadersInit {
     ...(env?.GITHUB_TOKEN ? { authorization: `Bearer ${env.GITHUB_TOKEN}` } : {}),
     "user-agent": "crabbox-ai",
     "x-github-api-version": "2022-11-28",
+  };
+}
+
+function githubHeadersWithToken(token?: string): HeadersInit {
+  return {
+    ...githubHeaders(),
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
   };
 }
 

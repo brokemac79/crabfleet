@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { css, js, preThemeScript, themeToggleHtml } from "./docs-site-assets.mjs";
@@ -27,10 +28,10 @@ const distDocs = new URL("../dist/docs/", import.meta.url);
 const appOrigin = "https://clawfleet.openclaw.ai";
 
 await run(process.execPath, [
-  new URL("../node_modules/vite/bin/vite.js", import.meta.url).pathname,
+  fileURLToPath(new URL("../node_modules/vite/bin/vite.js", import.meta.url)),
   "build",
   "--config",
-  new URL("../vite.config.mjs", import.meta.url).pathname,
+  fileURLToPath(new URL("../vite.config.mjs", import.meta.url)),
 ]);
 
 const [
@@ -136,10 +137,15 @@ function buildLucideIconScript(iconNodes) {
   const names = [
     "book-open",
     "copy",
+    "external-link",
     "git-pull-request",
     "layout-grid",
+    "list-checks",
+    "message-square",
     "moon",
+    "refresh-cw",
     "settings",
+    "shield-check",
     "square-terminal",
     "sun",
     "terminal",

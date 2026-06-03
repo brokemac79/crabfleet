@@ -97,6 +97,12 @@ function App() {
   );
   const [sessionLayout, setSessionLayout] = useState(loadSessionLayout);
   const [terminalStatus, setTerminalStatus] = useState({});
+  const [openClawState, setOpenClawState] = useState({
+    loading: false,
+    data: null,
+    error: "",
+    handoffText: "",
+  });
   const stateRef = useRef(state);
   const authMethodsRef = useRef(authMethods);
   const signedInRef = useRef(signedIn);
@@ -107,6 +113,7 @@ function App() {
   const stateRetryTimer = useRef(null);
   const refPreviewTimer = useRef(null);
   const refPreviewSeq = useRef(0);
+  const openClawSeq = useRef(0);
   const draggedSessionId = useRef(null);
   const autoLoginStarted = useRef(false);
 
@@ -189,6 +196,11 @@ function App() {
     if (!sharedSessionId) return;
     void openInitialSessionLink();
   }, [sharedSessionId, signedIn, state.interactiveSessions]);
+
+  useEffect(() => {
+    if (!signedIn || appView !== "openclaw") return;
+    void loadOpenClawWorkflow();
+  }, [signedIn, appView]);
 
   async function loadState() {
     try {
@@ -418,12 +430,13 @@ function App() {
   }
 
   function setAppView(value) {
-    const next = value === "board" ? "board" : "fleet";
+    const next = value === "board" ? "board" : value === "openclaw" ? "openclaw" : "fleet";
     setAppViewState(next);
     closeAllDrawers();
     if (!history.pushState) return;
     const url = new URL(location.href);
-    url.pathname = next === "board" ? "/app/board" : "/app/fleet";
+    url.pathname =
+      next === "board" ? "/app/board" : next === "openclaw" ? "/app/openclaw" : "/app/fleet";
     url.search = "";
     history.pushState(null, "", url);
   }
@@ -468,9 +481,75 @@ function App() {
       return;
     }
     const url = new URL(location.href);
-    url.pathname = options.grid ? "/sessions" : appView === "board" ? "/app/board" : "/app/fleet";
+    url.pathname = options.grid
+      ? "/sessions"
+      : appView === "board"
+        ? "/app/board"
+        : appView === "openclaw"
+          ? "/app/openclaw"
+          : "/app/fleet";
     url.search = "";
     history.replaceState(null, "", url);
+  }
+
+  async function loadOpenClawWorkflow(params = {}) {
+    const seq = ++openClawSeq.current;
+    const query = new URLSearchParams();
+    if (params.repo) query.set("repo", params.repo);
+    if (params.login) query.set("login", params.login);
+    const queryText = query.toString();
+    setOpenClawState((current) => ({ ...current, loading: true, error: "" }));
+    try {
+      const data = await api(`/api/openclaw/workflow${queryText ? `?${queryText}` : ""}`);
+      if (seq !== openClawSeq.current) return;
+      setOpenClawState((current) => ({ ...current, loading: false, data, error: "" }));
+    } catch (error) {
+      if (seq !== openClawSeq.current) return;
+      setOpenClawState((current) => ({
+        ...current,
+        loading: false,
+        error: error.message || "OpenClaw workflow failed to load",
+      }));
+    }
+  }
+
+  async function updateOpenClawPreferences(preferences) {
+    const result = await api("/api/openclaw/preferences", {
+      method: "PUT",
+      body: preferences,
+    });
+    setOpenClawState((current) => ({
+      ...current,
+      data: current.data ? { ...current.data, preferences: result.preferences } : current.data,
+    }));
+    await loadOpenClawWorkflow({
+      repo: result.preferences?.targetRepo,
+      login: result.preferences?.githubLogin,
+    });
+  }
+
+  async function createOpenClawCandidateCard(candidate) {
+    await api("/api/cards", {
+      method: "POST",
+      body: {
+        title: `OpenClaw #${candidate.number}: ${candidate.title}`,
+        prompt: candidate.workPrompt || `${candidate.url}\n\n${candidate.title}`,
+        repo: openClawState.data?.repo || "openclaw/openclaw",
+        source: "Issue",
+        runtime: "auto",
+        policy: "open_pr",
+      },
+    });
+    await loadState();
+  }
+
+  async function createOpenClawHandoff(input) {
+    const result = await api("/api/openclaw/handoff", {
+      method: "POST",
+      body: input,
+    });
+    setOpenClawState((current) => ({ ...current, handoffText: result.text || "" }));
+    return result.text || "";
   }
 
   function setTheme(value) {
@@ -863,6 +942,11 @@ function App() {
     removeRepo,
     refreshWorkflow,
     updatePolicy,
+    openClawState,
+    loadOpenClawWorkflow,
+    updateOpenClawPreferences,
+    createOpenClawCandidateCard,
+    createOpenClawHandoff,
   };
 
   return <CrabfleetApp {...props} />;
@@ -1066,6 +1150,15 @@ function AppShell(props) {
             <span>Board</span>
           </button>
           <button
+            class={props.appView === "openclaw" ? "active" : ""}
+            title="OpenClaw"
+            aria-label="OpenClaw"
+            onClick={() => props.setAppView("openclaw")}
+          >
+            <Icon name="list-checks" />
+            <span>OpenClaw</span>
+          </button>
+          <button
             title="Admin"
             aria-label="Admin"
             disabled={!canOwn(user)}
@@ -1099,11 +1192,19 @@ function AppShell(props) {
       <main class="shell">
         <section class="top">
           <div class="title">
-            <h1>{props.appView === "board" ? "Board" : productName}</h1>
+            <h1>
+              {props.appView === "board"
+                ? "Board"
+                : props.appView === "openclaw"
+                  ? "OpenClaw workflow"
+                  : productName}
+            </h1>
             <p>
               {props.appView === "board"
                 ? "Prompt cards and run attempts, separated from the live crabbox fleet."
-                : "All visible Codex crabboxes grouped by person, with SSH, WebVNC, and OpenClaw supervision."}
+                : props.appView === "openclaw"
+                  ? "Queue triage, trial-maintainer limits, PR readiness, and maintainer handoff text."
+                  : "All visible Codex crabboxes grouped by person, with SSH, WebVNC, and OpenClaw supervision."}
             </p>
           </div>
           <button
@@ -1120,6 +1221,8 @@ function AppShell(props) {
         />
         {props.appView === "board" ? (
           <BoardPage user={user} {...props} />
+        ) : props.appView === "openclaw" ? (
+          <OpenClawPage user={user} {...props} />
         ) : (
           <FleetPage
             active={active}
@@ -1211,6 +1314,401 @@ function BoardPage(props) {
       <Board {...props} />
     </section>
   );
+}
+
+function OpenClawPage(props) {
+  const workflow = props.openClawState.data;
+  const preferences = workflow?.preferences;
+  const governor = workflow?.governor;
+  const queues = workflow?.queues || [];
+  const pullRequests = workflow?.pullRequests?.items || [];
+  const [actionError, setActionError] = useState("");
+  const [busyIssue, setBusyIssue] = useState(null);
+  const canCreate = canMaintain(props.user) && Boolean(governor?.canStartNewWork);
+  return (
+    <section class="openclaw-page" aria-label="OpenClaw workflow">
+      <section class="openclaw-toolbar">
+        <div>
+          <div class="section-kicker">WORKFLOW PACK</div>
+          <h2>{workflow?.repo || "openclaw/openclaw"}</h2>
+        </div>
+        <button onClick={() => props.loadOpenClawWorkflow()} disabled={props.openClawState.loading}>
+          <Icon name="refresh-cw" />
+          Refresh
+        </button>
+      </section>
+      {props.openClawState.error ? (
+        <div class="workflow-banner error">{props.openClawState.error}</div>
+      ) : null}
+      {actionError ? <div class="workflow-banner error">{actionError}</div> : null}
+      <section class="openclaw-summary">
+        <Metric
+          label="Open PRs"
+          value={governor ? `${governor.openPrCount}/${governor.activeOpenPrLimit}` : "-"}
+        />
+        <Metric
+          label="Usage drop"
+          value={
+            governor?.usageDrop === null || governor?.usageDrop === undefined
+              ? "-"
+              : `${governor.usageDrop}/${governor.usageLimit}`
+          }
+        />
+        <Metric label="Workers" value={preferences?.maxParallelWorkers ?? "-"} />
+        <Metric label="New work" value={governor?.canStartNewWork ? "Allowed" : "Paused"} />
+      </section>
+      {governor?.reasons?.length ? (
+        <div class="workflow-banner">{governor.reasons.join(" ")}</div>
+      ) : null}
+      <OpenClawPreferencesPanel
+        preferences={preferences}
+        loading={props.openClawState.loading}
+        onSave={props.updateOpenClawPreferences}
+      />
+      <section class="openclaw-grid">
+        <div class="openclaw-main">
+          <section class="workflow-section">
+            <header class="workflow-section-head">
+              <div>
+                <div class="section-kicker">QUEUES</div>
+                <h2>ClawSweeper-screened issues</h2>
+              </div>
+            </header>
+            {queues.length ? (
+              queues.map((queue) => (
+                <OpenClawQueue
+                  key={queue.definition.id}
+                  queue={queue}
+                  canCreate={canCreate}
+                  busyIssue={busyIssue}
+                  onCreate={async (candidate) => {
+                    setActionError("");
+                    setBusyIssue(candidate.number);
+                    try {
+                      await props.createOpenClawCandidateCard(candidate);
+                    } catch (error) {
+                      setActionError(error.message || "Could not create card");
+                    } finally {
+                      setBusyIssue(null);
+                    }
+                  }}
+                />
+              ))
+            ) : (
+              <div class="empty">No queue data loaded.</div>
+            )}
+          </section>
+        </div>
+        <aside class="openclaw-side">
+          <OpenClawPullRequests
+            pullRequests={pullRequests}
+            error={workflow?.pullRequests?.error}
+            handoffText={props.openClawState.handoffText}
+            onHandoff={props.createOpenClawHandoff}
+          />
+        </aside>
+      </section>
+    </section>
+  );
+}
+
+function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
+  const [draft, setDraft] = useState(() => openClawPreferenceDraft(preferences));
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setDraft(openClawPreferenceDraft(preferences));
+  }, [preferences?.updatedAt, preferences?.targetRepo, preferences?.githubLogin]);
+  if (!preferences) return <div class="openclaw-settings skeleton">Loading settings...</div>;
+  async function submit(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const now = Date.now();
+      const weeklyRemainingBaseline = nullableFormNumber(draft.weeklyRemainingBaseline);
+      const weeklyRemainingCurrent = nullableFormNumber(draft.weeklyRemainingCurrent);
+      const usageWindowActive =
+        preferences.usageWindowStartedAt &&
+        now - preferences.usageWindowStartedAt <= 24 * 60 * 60 * 1000;
+      await onSave({
+        roleMode: draft.roleMode,
+        targetRepo: draft.targetRepo,
+        githubLogin: draft.githubLogin,
+        activeOpenPrLimit: Number(draft.activeOpenPrLimit),
+        dailyUsageDropLimit: Number(draft.dailyUsageDropLimit),
+        maxParallelWorkers: Number(draft.maxParallelWorkers),
+        weeklyRemainingBaseline,
+        weeklyRemainingCurrent,
+        usageWindowStartedAt:
+          weeklyRemainingBaseline === null && weeklyRemainingCurrent === null
+            ? null
+            : usageWindowActive
+              ? preferences.usageWindowStartedAt
+              : now,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+  const disabled = busy || loading;
+  return (
+    <form class="openclaw-settings" onSubmit={submit}>
+      <label>
+        Role
+        <select
+          value={draft.roleMode}
+          onInput={(event) => setDraft({ ...draft, roleMode: event.currentTarget.value })}
+        >
+          <option value="trial_maintainer">Trial maintainer</option>
+          <option value="contributor">Contributor</option>
+          <option value="maintainer">Maintainer</option>
+        </select>
+      </label>
+      <label>
+        Repo
+        <input
+          value={draft.targetRepo}
+          placeholder="openclaw/openclaw"
+          onInput={(event) => setDraft({ ...draft, targetRepo: event.currentTarget.value })}
+        />
+      </label>
+      <label>
+        GitHub login
+        <input
+          value={draft.githubLogin}
+          placeholder="brokemac79"
+          onInput={(event) => setDraft({ ...draft, githubLogin: event.currentTarget.value })}
+        />
+      </label>
+      <label>
+        Open PR limit
+        <input
+          type="number"
+          min="1"
+          max="20"
+          value={draft.activeOpenPrLimit}
+          onInput={(event) => setDraft({ ...draft, activeOpenPrLimit: event.currentTarget.value })}
+        />
+      </label>
+      <label>
+        Usage limit
+        <input
+          type="number"
+          min="1"
+          max="25"
+          value={draft.dailyUsageDropLimit}
+          onInput={(event) =>
+            setDraft({ ...draft, dailyUsageDropLimit: event.currentTarget.value })
+          }
+        />
+      </label>
+      <label>
+        Workers
+        <input
+          type="number"
+          min="1"
+          max="8"
+          value={draft.maxParallelWorkers}
+          onInput={(event) => setDraft({ ...draft, maxParallelWorkers: event.currentTarget.value })}
+        />
+      </label>
+      <label>
+        Weekly baseline
+        <input
+          type="number"
+          min="0"
+          max="100"
+          value={draft.weeklyRemainingBaseline}
+          onInput={(event) =>
+            setDraft({ ...draft, weeklyRemainingBaseline: event.currentTarget.value })
+          }
+        />
+      </label>
+      <label>
+        Weekly current
+        <input
+          type="number"
+          min="0"
+          max="100"
+          value={draft.weeklyRemainingCurrent}
+          onInput={(event) =>
+            setDraft({ ...draft, weeklyRemainingCurrent: event.currentTarget.value })
+          }
+        />
+      </label>
+      <button class="primary" type="submit" disabled={disabled}>
+        {busy ? "Saving..." : "Save"}
+      </button>
+    </form>
+  );
+}
+
+function OpenClawQueue({ queue, canCreate, busyIssue, onCreate }) {
+  return (
+    <section class="queue-block">
+      <header class="queue-head">
+        <div>
+          <h3>{queue.definition.title}</h3>
+          <p>{queue.definition.why}</p>
+        </div>
+        <span class="chip">{queue.totalCount}</span>
+      </header>
+      <code class="query-line">{queue.query}</code>
+      {queue.error ? <div class="workflow-banner error">{queue.error}</div> : null}
+      <div class="candidate-list">
+        {queue.candidates.length ? (
+          queue.candidates.map((candidate) => (
+            <article class="candidate-row" key={`${queue.definition.id}-${candidate.number}`}>
+              <div class="candidate-main">
+                <a href={candidate.url} target="_blank" rel="noreferrer">
+                  #{candidate.number} {candidate.title}
+                </a>
+                <div class="candidate-meta">
+                  {candidate.author ? <span class="chip">@{candidate.author}</span> : null}
+                  <span class={`chip ${candidate.signals.readyForPickup ? "ok" : "warn"}`}>
+                    {candidate.signals.readyForPickup ? "ready" : candidate.signals.ageGate}
+                  </span>
+                  {candidate.signals.sourceRepro ? <span class="chip">source repro</span> : null}
+                  {candidate.signals.currentMainRepro ? (
+                    <span class="chip">current main</span>
+                  ) : null}
+                  {candidate.signals.needsLiveValidation ? (
+                    <span class="chip warn">live proof</span>
+                  ) : null}
+                </div>
+              </div>
+              <div class="candidate-actions">
+                <button onClick={() => window.open(candidate.url, "_blank", "noopener")}>
+                  <Icon name="external-link" />
+                </button>
+                <button
+                  class="primary"
+                  disabled={
+                    !canCreate ||
+                    !candidate.signals.readyForPickup ||
+                    busyIssue === candidate.number
+                  }
+                  onClick={() => onCreate(candidate)}
+                >
+                  {busyIssue === candidate.number ? "Creating..." : "New card"}
+                </button>
+              </div>
+            </article>
+          ))
+        ) : (
+          <div class="empty">No matching issues.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function OpenClawPullRequests({ pullRequests, error, handoffText, onHandoff }) {
+  const [busyPr, setBusyPr] = useState(null);
+  return (
+    <section class="workflow-section pr-monitor">
+      <header class="workflow-section-head">
+        <div>
+          <div class="section-kicker">PR MONITOR</div>
+          <h2>Authored open PRs</h2>
+        </div>
+      </header>
+      {error ? <div class="workflow-banner error">{error}</div> : null}
+      <div class="pr-list">
+        {pullRequests.length ? (
+          pullRequests.map((pr) => (
+            <article class="pr-row" key={pr.number}>
+              <a href={pr.url} target="_blank" rel="noreferrer">
+                #{pr.number} {pr.title}
+              </a>
+              <div class="candidate-meta">
+                <span class={`chip ${pr.signals.readyForMaintainer ? "ok" : "warn"}`}>
+                  {pr.signals.statusLabel ||
+                    (pr.signals.readyForMaintainer ? "ready" : "needs action")}
+                </span>
+                <span
+                  class={`chip ${pr.checks.state === "green" ? "ok" : pr.checks.state === "failing" ? "danger" : "warn"}`}
+                >
+                  CI {pr.checks.state}
+                </span>
+                {pr.signals.proofSufficient ? <span class="chip ok">proof sufficient</span> : null}
+                {pr.checks.mantis ? <span class="chip">Mantis {pr.checks.mantis}</span> : null}
+              </div>
+              {pr.checks.failing.length ? (
+                <p class="pr-detail">Failing: {pr.checks.failing.slice(0, 3).join(", ")}</p>
+              ) : pr.checks.pending.length ? (
+                <p class="pr-detail">Pending: {pr.checks.pending.slice(0, 3).join(", ")}</p>
+              ) : null}
+              <button
+                disabled={busyPr === pr.number}
+                onClick={async () => {
+                  setBusyPr(pr.number);
+                  try {
+                    const text = await onHandoff({
+                      prUrl: pr.url,
+                      title: `#${pr.number} ${pr.title}`,
+                      summary: "Focused fix is ready for maintainer review.",
+                      proof: pr.signals.proofSufficient
+                        ? "ClawSweeper marked proof sufficient; local validation and Codex review completed."
+                        : "Local validation and Codex review completed.",
+                      ci: `CI ${pr.checks.state}`,
+                      clawsweeper:
+                        pr.signals.statusLabel ||
+                        (pr.signals.readyForMaintainer
+                          ? "Ready for maintainer look"
+                          : "Review latest ClawSweeper state"),
+                    });
+                    await copyText(text);
+                  } finally {
+                    setBusyPr(null);
+                  }
+                }}
+              >
+                <Icon name="message-square" />
+                Handoff
+              </button>
+            </article>
+          ))
+        ) : (
+          <div class="empty">No authored open PRs found.</div>
+        )}
+      </div>
+      <label class="handoff-box">
+        Discord handoff
+        <textarea readOnly value={handoffText} placeholder="Generated handoff text appears here" />
+      </label>
+      <button disabled={!handoffText} onClick={() => copyText(handoffText)}>
+        <Icon name="copy" />
+        Copy
+      </button>
+    </section>
+  );
+}
+
+function openClawPreferenceDraft(preferences) {
+  return {
+    roleMode: preferences?.roleMode || "trial_maintainer",
+    targetRepo: preferences?.targetRepo || "openclaw/openclaw",
+    githubLogin: preferences?.githubLogin || "",
+    activeOpenPrLimit: String(preferences?.activeOpenPrLimit ?? 10),
+    dailyUsageDropLimit: String(preferences?.dailyUsageDropLimit ?? 5),
+    maxParallelWorkers: String(preferences?.maxParallelWorkers ?? 2),
+    weeklyRemainingBaseline:
+      preferences?.weeklyRemainingBaseline === null ||
+      preferences?.weeklyRemainingBaseline === undefined
+        ? ""
+        : String(preferences.weeklyRemainingBaseline),
+    weeklyRemainingCurrent:
+      preferences?.weeklyRemainingCurrent === null ||
+      preferences?.weeklyRemainingCurrent === undefined
+        ? ""
+        : String(preferences.weeklyRemainingCurrent),
+  };
+}
+
+function nullableFormNumber(value) {
+  if (value === "" || value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function FleetPage(props) {
@@ -1512,8 +2010,7 @@ function Metric({ label, value }) {
 
 function CopyCommand({ value }) {
   async function copy() {
-    if (!navigator.clipboard) return;
-    await navigator.clipboard.writeText(value);
+    await copyText(value);
   }
   return (
     <button class="terminal-command" type="button" onClick={() => void copy()} title="Copy command">
@@ -1521,6 +2018,11 @@ function CopyCommand({ value }) {
       <Icon name="copy" />
     </button>
   );
+}
+
+async function copyText(value) {
+  if (!navigator.clipboard) return;
+  await navigator.clipboard.writeText(String(value || ""));
 }
 
 function RefPreview({ preview, canCreate, onCreate }) {
@@ -2885,9 +3387,11 @@ function parseSessionLink() {
 }
 
 function initialAppView() {
-  return location.pathname === "/app/board" || location.pathname === "/app/board/"
-    ? "board"
-    : "fleet";
+  if (location.pathname === "/app/board" || location.pathname === "/app/board/") return "board";
+  if (location.pathname === "/app/openclaw" || location.pathname === "/app/openclaw/") {
+    return "openclaw";
+  }
+  return "fleet";
 }
 
 function isGithubLoginCallback() {
