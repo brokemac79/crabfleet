@@ -1265,6 +1265,8 @@ export default {
         url.pathname === "/app/fleet/" ||
         url.pathname === "/app/board" ||
         url.pathname === "/app/board/" ||
+        url.pathname === "/app/claw-queue" ||
+        url.pathname === "/app/claw-queue/" ||
         url.pathname === "/app/openclaw" ||
         url.pathname === "/app/openclaw/" ||
         url.pathname === "/sessions" ||

@@ -326,21 +326,33 @@ export function evaluateOpenClawGovernor(
 }
 
 export function buildOpenClawIssuePrompt(candidate: OpenClawCandidate): string {
+  const labels = candidate.labels.length ? candidate.labels.join(", ") : "none";
   return [
-    `OpenClaw issue ${candidate.url}`,
+    `Start work on this OpenClaw issue: ${candidate.url}`,
     "",
-    candidate.title,
+    `Title: ${candidate.title}`,
+    `Issue number: #${candidate.number}`,
+    `Queue: ${candidate.queueId}`,
+    `Labels: ${labels}`,
+    "",
+    "Goal:",
+    "Produce a focused fix PR that is ready for maintainer review. Do not merge, land, or enable automerge.",
     "",
     "Process:",
-    "1. Confirm the issue still has no linked fix PR and is safe to pick up.",
-    "2. Use the OpenClaw pre-PR issue intake gate before coding.",
-    "3. Read the latest OpenClaw AGENTS.md, CONTRIBUTING.md, and PR template before making the branch.",
-    "4. Follow ClawSweeper's assessment and route; stop if it requires a product, security, maintainer, or info decision.",
-    "5. Comment on the issue that you are working on it if claiming is not available.",
-    "6. Keep the fix focused, prove reported/latest/current-main behavior where relevant, and avoid CHANGELOG edits.",
-    "7. Before opening or updating the PR, run local validation plus codex review --base origin/main.",
-    "8. Open a PR only when it is ready for maintainer review; do not merge, land, or enable automerge.",
-    "9. If proof is insufficient and Mantis is unavailable, park the work with a concise blocker note.",
+    "1. Re-check the issue on GitHub before coding. Confirm it is still open, has no linked/open fix PR, and ClawSweeper marked it queueable.",
+    "2. Read and follow the latest local OpenClaw AGENTS.md, CONTRIBUTING.md, and pull request template. If they are missing locally, fetch the current files from the target OpenClaw repo before continuing.",
+    "3. Use the OpenClaw pre-PR issue intake gate: understand the report, reproduce or prove the behavior where feasible, and identify the smallest safe fix shape.",
+    "4. Follow ClawSweeper's assessment and suggested route. Stop with a concise blocker note if it needs a product, security, maintainer, or reporter decision.",
+    "5. If issue claiming is not available, comment on the issue that you are working on it before making the PR.",
+    "6. Keep the change focused. Avoid unrelated refactors and avoid CHANGELOG edits unless OpenClaw's current contributing guidance explicitly requires one.",
+    "7. Run the relevant local tests and proof commands. Include before/after evidence when the issue needs behavior proof. Use Mantis if it is available and relevant.",
+    "8. Before opening or updating the PR, run Codex review with the appropriate base, normally: codex review --base origin/main.",
+    "9. Open or update the PR only when the fix is ready for maintainer review. The PR body must link the issue and include proof, tests, Codex review, and any Mantis/ClawSweeper notes.",
+    "10. After opening/updating the PR, monitor CI and ClawSweeper. If checks fail, fix them and update the PR. If CI times out/flakes, rerun or make a harmless update only when that is the accepted OpenClaw process.",
+    "11. Do not stop just because the PR exists. Stop only when CI is green or failures are explained, Codex review has passed, proof is sufficient, and ClawSweeper/status labels indicate it is ready for maintainer look.",
+    "12. If proof is insufficient and Mantis is unavailable or broken, park the work with a short blocker note explaining what is missing.",
+    "",
+    "When finished, provide a short Discord-ready maintainer handoff: PR link, issue link, one-line summary, proof/tests, Codex review result, CI state, and ClawSweeper readiness.",
   ].join("\n");
 }
 

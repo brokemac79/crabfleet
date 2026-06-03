@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   buildOpenClawDiscordHandoff,
+  buildOpenClawIssuePrompt,
   buildOpenClawIssueSearchQuery,
   evaluateOpenClawGovernor,
   normalizeOpenClawPreferences,
@@ -114,6 +115,31 @@ test("PR signals identify ready-for-maintainer handoff state", () => {
   assert.equal(signals.readyForMaintainer, true);
   assert.equal(signals.proofSufficient, true);
   assert.equal(signals.mergeReady, true);
+});
+
+test("issue prompt carries the OpenClaw fix process into Codex", () => {
+  const prompt = buildOpenClawIssuePrompt({
+    number: 99,
+    title: "Queue guard ignores linked PRs",
+    url: "https://github.com/openclaw/openclaw/issues/99",
+    author: "reporter",
+    createdAt: "2026-06-02T12:00:00Z",
+    updatedAt: "2026-06-03T12:00:00Z",
+    labels: ["P1", "clawsweeper:queueable-fix", "clawsweeper:source-repro"],
+    queueId: "maintainer-p1",
+    signals: openClawIssueSignals(
+      ["P1", "clawsweeper:queueable-fix", "clawsweeper:source-repro"],
+      "2026-06-02T12:00:00Z",
+      now,
+    ),
+  });
+
+  assert.match(prompt, /CONTRIBUTING\.md/);
+  assert.match(prompt, /AGENTS\.md/);
+  assert.match(prompt, /codex review --base origin\/main/);
+  assert.match(prompt, /monitor CI and ClawSweeper/);
+  assert.match(prompt, /ready for maintainer look/);
+  assert.match(prompt, /Discord-ready maintainer handoff/);
 });
 
 test("Discord handoff stays short and includes Codex review", () => {

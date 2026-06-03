@@ -1,6 +1,7 @@
 import { render } from "preact";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { api } from "./api.js";
+import { buildOpenClawIssuePrompt } from "../openclaw-workflow.ts";
 import {
   canMaintain,
   canOwn,
@@ -38,6 +39,10 @@ const loginReturnKey = "crabbox-login-return";
 const skipAutoGithubLoginKey = "crabbox-skip-auto-github-login";
 const githubAutoLoginReadyKey = "crabbox-github-auto-login-ready";
 const sessionLayoutStorageKey = "crabbox-session-layout-v1";
+const clawQueuePath = "/app/claw-queue";
+const openClawRunnerUrlStorageKey = "crabbox-openclaw-runner-url";
+const openClawRunnerTokenStorageKey = "crabbox-openclaw-runner-token";
+const defaultOpenClawRunnerUrl = "http://127.0.0.1:4545";
 const emptyState = {
   cards: [],
   interactiveSessions: [],
@@ -103,6 +108,7 @@ function App() {
     error: "",
     handoffText: "",
   });
+  const [openClawRunner, setOpenClawRunner] = useState(loadOpenClawRunnerSettings);
   const stateRef = useRef(state);
   const authMethodsRef = useRef(authMethods);
   const signedInRef = useRef(signedIn);
@@ -436,7 +442,7 @@ function App() {
     if (!history.pushState) return;
     const url = new URL(location.href);
     url.pathname =
-      next === "board" ? "/app/board" : next === "openclaw" ? "/app/openclaw" : "/app/fleet";
+      next === "board" ? "/app/board" : next === "openclaw" ? clawQueuePath : "/app/fleet";
     url.search = "";
     history.pushState(null, "", url);
   }
@@ -486,7 +492,7 @@ function App() {
       : appView === "board"
         ? "/app/board"
         : appView === "openclaw"
-          ? "/app/openclaw"
+          ? clawQueuePath
           : "/app/fleet";
     url.search = "";
     history.replaceState(null, "", url);
@@ -508,7 +514,7 @@ function App() {
       setOpenClawState((current) => ({
         ...current,
         loading: false,
-        error: error.message || "OpenClaw workflow failed to load",
+        error: error.message || "Claw Queue failed to load",
       }));
     }
   }
@@ -529,11 +535,12 @@ function App() {
   }
 
   async function createOpenClawCandidateCard(candidate) {
+    const prompt = openClawCandidatePrompt(candidate);
     await api("/api/cards", {
       method: "POST",
       body: {
         title: `OpenClaw #${candidate.number}: ${candidate.title}`,
-        prompt: candidate.workPrompt || `${candidate.url}\n\n${candidate.title}`,
+        prompt,
         repo: openClawState.data?.repo || "openclaw/openclaw",
         source: "Issue",
         runtime: "auto",
@@ -541,6 +548,101 @@ function App() {
       },
     });
     await loadState();
+  }
+
+  async function copyOpenClawCandidatePrompt(candidate) {
+    await copyText(openClawCandidatePrompt(candidate));
+  }
+
+  function updateOpenClawRunnerSettings(next) {
+    const settings = {
+      ...openClawRunner,
+      ...next,
+      url: next.url === undefined ? openClawRunner.url : String(next.url),
+      token: String(next.token ?? openClawRunner.token ?? ""),
+    };
+    try {
+      localStorage.setItem(openClawRunnerUrlStorageKey, settings.url);
+      localStorage.setItem(openClawRunnerTokenStorageKey, settings.token);
+    } catch {}
+    setOpenClawRunner(settings);
+    return settings;
+  }
+
+  async function checkOpenClawRunner(settings = openClawRunner) {
+    const target = updateOpenClawRunnerSettings(settings);
+    setOpenClawRunner((current) => ({ ...current, status: "checking", error: "" }));
+    try {
+      const response = await fetch(`${resolveRunnerUrl(target.url)}/health`, {
+        headers: openClawRunnerHeaders(target),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.ok !== true || body.runner !== "claw-queue-codex-bridge") {
+        throw new Error(body.error || `Runner returned ${response.status}`);
+      }
+      setOpenClawRunner((current) => ({
+        ...current,
+        status: "connected",
+        error: "",
+        info: body,
+      }));
+      return body;
+    } catch (error) {
+      setOpenClawRunner((current) => ({
+        ...current,
+        status: "error",
+        error: error.message || "Could not reach local Codex runner",
+      }));
+      throw error;
+    }
+  }
+
+  async function startOpenClawCodexWork(candidate) {
+    if (!openClawState.data?.governor?.canStartNewWork) {
+      throw new Error("New work is paused by the current OpenClaw limits");
+    }
+    const target = openClawRunner;
+    setOpenClawRunner((current) => ({
+      ...current,
+      startingIssue: candidate.number,
+      error: "",
+    }));
+    try {
+      const response = await fetch(`${resolveRunnerUrl(target.url)}/start`, {
+        method: "POST",
+        headers: {
+          ...openClawRunnerHeaders(target),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          repo: openClawState.data?.repo || "openclaw/openclaw",
+          issueNumber: candidate.number,
+          issueUrl: candidate.url,
+          title: candidate.title,
+          queueId: candidate.queueId,
+          prompt: openClawCandidatePrompt(candidate),
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.ok === false) {
+        throw new Error(body.error || `Runner returned ${response.status}`);
+      }
+      setOpenClawRunner((current) => ({
+        ...current,
+        status: "connected",
+        startingIssue: null,
+        lastRun: body.run || body,
+      }));
+      return body;
+    } catch (error) {
+      setOpenClawRunner((current) => ({
+        ...current,
+        status: "error",
+        startingIssue: null,
+        error: error.message || "Could not start local Codex",
+      }));
+      throw error;
+    }
   }
 
   async function createOpenClawHandoff(input) {
@@ -943,9 +1045,14 @@ function App() {
     refreshWorkflow,
     updatePolicy,
     openClawState,
+    openClawRunner,
     loadOpenClawWorkflow,
     updateOpenClawPreferences,
     createOpenClawCandidateCard,
+    copyOpenClawCandidatePrompt,
+    updateOpenClawRunnerSettings,
+    checkOpenClawRunner,
+    startOpenClawCodexWork,
     createOpenClawHandoff,
   };
 
@@ -1151,12 +1258,12 @@ function AppShell(props) {
           </button>
           <button
             class={props.appView === "openclaw" ? "active" : ""}
-            title="OpenClaw"
-            aria-label="OpenClaw"
+            title="Claw Queue"
+            aria-label="Claw Queue"
             onClick={() => props.setAppView("openclaw")}
           >
             <Icon name="list-checks" />
-            <span>OpenClaw</span>
+            <span>Claw Queue</span>
           </button>
           <button
             title="Admin"
@@ -1196,14 +1303,14 @@ function AppShell(props) {
               {props.appView === "board"
                 ? "Board"
                 : props.appView === "openclaw"
-                  ? "OpenClaw workflow"
+                  ? "Claw Queue"
                   : productName}
             </h1>
             <p>
               {props.appView === "board"
                 ? "Prompt cards and run attempts, separated from the live crabbox fleet."
                 : props.appView === "openclaw"
-                  ? "Queue triage, trial-maintainer limits, PR readiness, and maintainer handoff text."
+                  ? "ClawSweeper-screened issues, Codex handoff, PR readiness, and maintainer review notes."
                   : "All visible Codex crabboxes grouped by person, with SSH, WebVNC, and OpenClaw supervision."}
             </p>
           </div>
@@ -1325,11 +1432,12 @@ function OpenClawPage(props) {
   const [actionError, setActionError] = useState("");
   const [busyIssue, setBusyIssue] = useState(null);
   const canCreate = canMaintain(props.user) && Boolean(governor?.canStartNewWork);
+  const canStartWork = Boolean(governor?.canStartNewWork);
   return (
-    <section class="openclaw-page" aria-label="OpenClaw workflow">
+    <section class="openclaw-page" aria-label="Claw Queue">
       <section class="openclaw-toolbar">
         <div>
-          <div class="section-kicker">WORKFLOW PACK</div>
+          <div class="section-kicker">WORK QUEUE</div>
           <h2>{workflow?.repo || "openclaw/openclaw"}</h2>
         </div>
         <button onClick={() => props.loadOpenClawWorkflow()} disabled={props.openClawState.loading}>
@@ -1365,6 +1473,11 @@ function OpenClawPage(props) {
         loading={props.openClawState.loading}
         onSave={props.updateOpenClawPreferences}
       />
+      <OpenClawRunnerPanel
+        runner={props.openClawRunner}
+        onChange={props.updateOpenClawRunnerSettings}
+        onCheck={props.checkOpenClawRunner}
+      />
       <section class="openclaw-grid">
         <div class="openclaw-main">
           <section class="workflow-section">
@@ -1380,7 +1493,18 @@ function OpenClawPage(props) {
                   key={queue.definition.id}
                   queue={queue}
                   canCreate={canCreate}
+                  canStartWork={canStartWork}
+                  runner={props.openClawRunner}
                   busyIssue={busyIssue}
+                  onCopyPrompt={props.copyOpenClawCandidatePrompt}
+                  onStartCodex={async (candidate) => {
+                    setActionError("");
+                    try {
+                      await props.startOpenClawCodexWork(candidate);
+                    } catch (error) {
+                      setActionError(error.message || "Could not start local Codex");
+                    }
+                  }}
                   onCreate={async (candidate) => {
                     setActionError("");
                     setBusyIssue(candidate.number);
@@ -1453,7 +1577,10 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
   return (
     <form class="openclaw-settings" onSubmit={submit}>
       <label>
-        Role
+        <LabelText
+          text="Role"
+          help="Chooses contributor, trial-maintainer, or maintainer queue rules. Save reloads the queues."
+        />
         <select
           value={draft.roleMode}
           onInput={(event) => setDraft({ ...draft, roleMode: event.currentTarget.value })}
@@ -1464,7 +1591,10 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
         </select>
       </label>
       <label>
-        Repo
+        <LabelText
+          text="Repo"
+          help="GitHub owner/repo to search for ClawSweeper-screened issues when you save."
+        />
         <input
           value={draft.targetRepo}
           placeholder="openclaw/openclaw"
@@ -1472,7 +1602,10 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
         />
       </label>
       <label>
-        GitHub login
+        <LabelText
+          text="GitHub login"
+          help="GitHub username used to monitor your authored open PRs. It is not an issue search term."
+        />
         <input
           value={draft.githubLogin}
           placeholder="brokemac79"
@@ -1480,7 +1613,10 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
         />
       </label>
       <label>
-        Open PR limit
+        <LabelText
+          text="Open PR limit"
+          help="Personal cap for authored open PRs. At or above this number, new work is paused."
+        />
         <input
           type="number"
           min="1"
@@ -1490,7 +1626,10 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
         />
       </label>
       <label>
-        Usage limit
+        <LabelText
+          text="Usage limit"
+          help="Weekly usage percentage-point drop allowed in the current 24-hour window."
+        />
         <input
           type="number"
           min="1"
@@ -1502,7 +1641,10 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
         />
       </label>
       <label>
-        Workers
+        <LabelText
+          text="Workers"
+          help="Preferred parallel worker limit. It does not start new work by itself yet."
+        />
         <input
           type="number"
           min="1"
@@ -1512,7 +1654,10 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
         />
       </label>
       <label>
-        Weekly baseline
+        <LabelText
+          text="Weekly baseline"
+          help="Starting weekly usage remaining percentage for the 24-hour budget window."
+        />
         <input
           type="number"
           min="0"
@@ -1524,7 +1669,10 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
         />
       </label>
       <label>
-        Weekly current
+        <LabelText
+          text="Weekly current"
+          help="Current weekly usage remaining percentage. Lower than baseline counts as usage drop."
+        />
         <input
           type="number"
           min="0"
@@ -1542,7 +1690,67 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
   );
 }
 
-function OpenClawQueue({ queue, canCreate, busyIssue, onCreate }) {
+function OpenClawRunnerPanel({ runner, onChange, onCheck }) {
+  const status = runner?.status || "unknown";
+  const command = openClawRunnerCommand(runner);
+  return (
+    <section class="openclaw-runner">
+      <div>
+        <div class="section-kicker">CODEX HANDOFF</div>
+        <h2>Local Codex bridge</h2>
+      </div>
+      <label>
+        <LabelText text="Runner URL" help="Local bridge URL to test or use for Start Codex." />
+        <input
+          value={runner?.url || defaultOpenClawRunnerUrl}
+          onInput={(event) => onChange({ url: event.currentTarget.value })}
+        />
+      </label>
+      <label>
+        <LabelText text="Token" help="Bearer token printed by the local runner command." />
+        <input
+          type="password"
+          value={runner?.token || ""}
+          placeholder="Required if runner started with a token"
+          onInput={(event) => onChange({ token: event.currentTarget.value })}
+        />
+      </label>
+      <div class="runner-actions">
+        <span class={`chip ${status === "connected" ? "ok" : status === "error" ? "danger" : ""}`}>
+          {status}
+        </span>
+        <button type="button" onClick={() => Promise.resolve(onCheck()).catch(() => {})}>
+          Test
+        </button>
+        <button type="button" onClick={() => copyText(command)}>
+          <Icon name="copy" />
+          Runner command
+        </button>
+      </div>
+      {runner?.error ? <div class="workflow-banner error">{runner.error}</div> : null}
+      {runner?.lastRun ? (
+        <div class="workflow-banner">
+          Started issue #{runner.lastRun.issueNumber || runner.lastRun.issue_number}:{" "}
+          {runner.lastRun.threadId ||
+            runner.lastRun.sessionId ||
+            runner.lastRun.id ||
+            "runner accepted"}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function OpenClawQueue({
+  queue,
+  canCreate,
+  canStartWork,
+  runner,
+  busyIssue,
+  onCopyPrompt,
+  onStartCodex,
+  onCreate,
+}) {
   return (
     <section class="queue-block">
       <header class="queue-head">
@@ -1579,6 +1787,22 @@ function OpenClawQueue({ queue, canCreate, busyIssue, onCreate }) {
               <div class="candidate-actions">
                 <button onClick={() => window.open(candidate.url, "_blank", "noopener")}>
                   <Icon name="external-link" />
+                </button>
+                <button onClick={() => onCopyPrompt(candidate)}>
+                  <Icon name="copy" />
+                  Copy prompt
+                </button>
+                <button
+                  disabled={
+                    runner?.status !== "connected" ||
+                    !canStartWork ||
+                    !candidate.signals.readyForPickup ||
+                    runner?.startingIssue === candidate.number
+                  }
+                  onClick={() => onStartCodex(candidate)}
+                >
+                  <Icon name="square-terminal" />
+                  {runner?.startingIssue === candidate.number ? "Starting..." : "Start Codex"}
                 </button>
                 <button
                   class="primary"
@@ -1684,6 +1908,23 @@ function OpenClawPullRequests({ pullRequests, error, handoffText, onHandoff }) {
   );
 }
 
+function LabelText({ text, help }) {
+  return (
+    <span class="label-text">
+      {text}
+      <span
+        class="help-dot"
+        title={help}
+        aria-label={`${text}: ${help}`}
+        data-help={help}
+        tabIndex="0"
+      >
+        ?
+      </span>
+    </span>
+  );
+}
+
 function openClawPreferenceDraft(preferences) {
   return {
     roleMode: preferences?.roleMode || "trial_maintainer",
@@ -1703,6 +1944,96 @@ function openClawPreferenceDraft(preferences) {
         ? ""
         : String(preferences.weeklyRemainingCurrent),
   };
+}
+
+function openClawCandidatePrompt(candidate) {
+  const prompt = String(candidate?.workPrompt || "");
+  if (openClawPromptLooksComplete(prompt)) return prompt;
+  return buildOpenClawIssuePrompt({
+    ...candidate,
+    author: candidate?.author || null,
+    createdAt: candidate?.createdAt || null,
+    labels: Array.isArray(candidate?.labels) ? candidate.labels : [],
+    number: Number(candidate?.number) || 0,
+    queueId: candidate?.queueId || "openclaw",
+    signals: candidate?.signals || {},
+    title: candidate?.title || "OpenClaw issue",
+    updatedAt: candidate?.updatedAt || null,
+    url: candidate?.url || "https://github.com/openclaw/openclaw/issues",
+  });
+}
+
+function openClawPromptLooksComplete(prompt) {
+  return (
+    /AGENTS\.md/.test(prompt) &&
+    /CONTRIBUTING\.md/.test(prompt) &&
+    /codex review/i.test(prompt) &&
+    /ready for maintainer look/i.test(prompt)
+  );
+}
+
+function loadOpenClawRunnerSettings() {
+  try {
+    const savedUrl = localStorage.getItem(openClawRunnerUrlStorageKey);
+    return {
+      url: savedUrl ? String(savedUrl) : defaultOpenClawRunnerUrl,
+      token: localStorage.getItem(openClawRunnerTokenStorageKey) || "",
+      status: "unknown",
+      error: "",
+      info: null,
+      lastRun: null,
+      startingIssue: null,
+    };
+  } catch {
+    return {
+      url: defaultOpenClawRunnerUrl,
+      token: "",
+      status: "unknown",
+      error: "",
+      info: null,
+      lastRun: null,
+      startingIssue: null,
+    };
+  }
+}
+
+function resolveRunnerUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) return defaultOpenClawRunnerUrl;
+  const candidate = text.includes("://") ? text : `http://${text}`;
+  let url;
+  try {
+    url = new URL(candidate);
+  } catch {
+    throw new Error("Runner URL must be a localhost, 127.0.0.1, or ::1 HTTP URL.");
+  }
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!["http:", "https:"].includes(url.protocol) || !isLoopbackRunnerHost(hostname)) {
+    throw new Error("Runner URL must be a localhost, 127.0.0.1, or ::1 HTTP URL.");
+  }
+  url.hash = "";
+  url.search = "";
+  return url.toString().replace(/\/+$/, "");
+}
+
+function isLoopbackRunnerHost(hostname) {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+function openClawRunnerHeaders(runner) {
+  const headers = { accept: "application/json" };
+  if (runner?.token) headers.authorization = `Bearer ${runner.token}`;
+  return headers;
+}
+
+function openClawRunnerCommand(runner) {
+  let port = "4545";
+  try {
+    port = new URL(resolveRunnerUrl(runner?.url)).port || port;
+  } catch {}
+  const token = String(runner?.token || "").trim();
+  const tokenArg = token ? ` --token ${token}` : "";
+  return `pnpm openclaw:runner -- --workspace C:\\path\\to\\openclaw --port ${port}${tokenArg}`;
 }
 
 function nullableFormNumber(value) {
@@ -1977,15 +2308,21 @@ function DevIdentityPanel({ hidden, user, onDevIdentity }) {
         ))}
       </div>
       <label>
-        ID
+        <LabelText
+          text="ID"
+          help="Preview-only fake login/subject. Apply switches the local preview identity."
+        />
         <input value={id} onInput={(event) => setId(event.currentTarget.value)} />
       </label>
       <label>
-        Name
+        <LabelText text="Name" help="Preview-only display name for the local fake identity." />
         <input value={name} onInput={(event) => setName(event.currentTarget.value)} />
       </label>
       <label>
-        Role
+        <LabelText
+          text="Role"
+          help="Preview-only permission role. Apply can enable or disable controls in the mock app."
+        />
         <select value={role} onInput={(event) => setRole(event.currentTarget.value)}>
           <option value="owner">Owner</option>
           <option value="maintainer">Maintainer</option>
@@ -3388,7 +3725,12 @@ function parseSessionLink() {
 
 function initialAppView() {
   if (location.pathname === "/app/board" || location.pathname === "/app/board/") return "board";
-  if (location.pathname === "/app/openclaw" || location.pathname === "/app/openclaw/") {
+  if (
+    location.pathname === clawQueuePath ||
+    location.pathname === `${clawQueuePath}/` ||
+    location.pathname === "/app/openclaw" ||
+    location.pathname === "/app/openclaw/"
+  ) {
     return "openclaw";
   }
   return "fleet";
