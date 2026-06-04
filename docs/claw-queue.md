@@ -266,6 +266,7 @@ Use **Archive inactive** or archive individual rows. This only clears the local 
 
 ## See Also
 
+- [One-page Claw Queue brief](/claw-queue/brief/)
 - [Quickstart](/quickstart/)
 - [Cards](/cards/)
 - [Runs](/runs/)
