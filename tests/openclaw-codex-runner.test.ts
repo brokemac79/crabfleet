@@ -81,6 +81,49 @@ test("local Codex bridge marks log setup failures as failed runs", async (t) => 
   assert.equal(runs.runs[1].status, "failed");
 });
 
+test("local Codex bridge tracks parallel active runs up to max-active", async (t) => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "cf-parallel-codex-"));
+  const fakeCodex = await writeFakeCodexCommand(temp);
+
+  const port = await freePort();
+  const token = "runner-parallel-token";
+  const base = `http://127.0.0.1:${port}`;
+  const runner = startRunner([
+    "--workspace",
+    repoRoot,
+    "--port",
+    String(port),
+    "--token",
+    token,
+    "--codex-bin",
+    fakeCodex,
+    "--max-active",
+    "2",
+  ]);
+  t.after(() => stopRunner(runner));
+
+  const health = await waitForHealth(base, token, runner);
+  assert.equal(health.maxActive, 2);
+
+  const first = await postStart(base, token, "first parallel prompt");
+  const second = await postStart(base, token, "second parallel prompt");
+  const third = await postStart(base, token, "third parallel prompt");
+
+  assert.equal(first.status, 202);
+  assert.equal(second.status, 202);
+  assert.equal(third.status, 409);
+  assert.match(third.body.error, /2 active Codex run/);
+
+  const activeHealth = await waitForHealth(base, token, runner);
+  assert.equal(activeHealth.active, 2);
+
+  const runs = await getRuns(base, token);
+  assert.equal(runs.runs.filter((run: any) => run.status === "running").length, 2);
+
+  await waitForRun(base, token, first.body.run.id, "completed");
+  await waitForRun(base, token, second.body.run.id, "completed");
+});
+
 test(
   "local Codex bridge launches Windows cmd shims and rejects concurrent starts",
   { skip: process.platform !== "win32" },
@@ -207,6 +250,30 @@ async function getRuns(base: string, token: string) {
     headers: { authorization: `Bearer ${token}` },
   });
   return response.json();
+}
+
+async function writeFakeCodexCommand(directory: string): Promise<string> {
+  const fakeScript = path.join(directory, "fake-codex.mjs");
+  await fs.writeFile(
+    fakeScript,
+    [
+      "import { setTimeout } from 'node:timers/promises';",
+      "process.stdin.resume();",
+      "await setTimeout(1200);",
+      "process.exit(0);",
+      "",
+    ].join("\n"),
+  );
+  if (process.platform === "win32") {
+    const command = path.join(directory, "codex.cmd");
+    await fs.writeFile(command, `@echo off\r\n"${process.execPath}" "${fakeScript}" %*\r\n`);
+    return command;
+  }
+  const command = path.join(directory, "codex");
+  await fs.writeFile(command, `#!/bin/sh\nexec "${process.execPath}" "${fakeScript}" "$@"\n`, {
+    mode: 0o755,
+  });
+  return command;
 }
 
 async function freePort(): Promise<number> {

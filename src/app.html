@@ -2052,6 +2052,80 @@
         justify-content: center;
         gap: 7px;
       }
+      .openclaw-active-work {
+        display: grid;
+        gap: 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--dashboard-surface);
+        padding: 14px;
+      }
+      .openclaw-active-work h2 {
+        margin: 5px 0 0;
+        color: var(--ink);
+        font-size: 18px;
+        font-weight: 720;
+      }
+      .active-work-tools {
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+      .active-work-tools button,
+      .active-work-detail button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+      }
+      .active-work-list {
+        display: grid;
+        gap: 8px;
+      }
+      .active-work-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(180px, 0.34fr);
+        gap: 12px;
+        align-items: center;
+        min-height: 76px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 10px;
+      }
+      .active-work-main {
+        min-width: 0;
+        display: grid;
+        gap: 6px;
+      }
+      .active-work-main a {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--ink);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .active-work-detail {
+        min-width: 0;
+        display: grid;
+        gap: 7px;
+        justify-items: end;
+      }
+      .active-work-detail code {
+        max-width: 100%;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel-2);
+        color: var(--muted);
+        padding: 6px 8px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+      }
       .openclaw-grid {
         display: grid;
         grid-template-columns: minmax(0, 1fr) minmax(300px, 0.42fr);
@@ -2253,10 +2327,12 @@
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
         .openclaw-settings button,
-        .runner-actions {
+        .runner-actions,
+        .active-work-tools {
           grid-column: 1 / -1;
         }
-        .runner-actions {
+        .runner-actions,
+        .active-work-tools {
           justify-content: flex-start;
         }
         .fleet-control-panel {
@@ -2328,6 +2404,7 @@
         .openclaw-summary,
         .openclaw-settings,
         .openclaw-runner,
+        .active-work-row,
         .candidate-row,
         .fleet-control-grid,
         .dev-identity-panel,
@@ -2345,6 +2422,9 @@
         }
         .candidate-actions button {
           width: 100%;
+        }
+        .active-work-detail {
+          justify-items: stretch;
         }
         .session-grid {
           grid-template-columns: 1fr;

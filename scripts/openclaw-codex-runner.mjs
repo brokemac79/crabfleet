@@ -16,6 +16,10 @@ const codexLaunch = resolveCodexLaunch(codexBin);
 const providedToken = String(args.token || process.env.OPENCLAW_CODEX_RUNNER_TOKEN || "");
 const token = providedToken || crypto.randomBytes(24).toString("base64url");
 const dryRun = Boolean(args["dry-run"]);
+const maxActive = Math.max(
+  1,
+  Math.min(16, integer(args["max-active"] || process.env.OPENCLAW_CODEX_RUNNER_MAX_ACTIVE, 1)),
+);
 const defaultLogDir = path.join(
   os.tmpdir(),
   "crabfleet-openclaw-codex-runs",
@@ -65,7 +69,8 @@ async function handleRequest(request, response) {
       codexBin,
       codexCommand: codexLaunch.display,
       dryRun,
-      active: [...runs.values()].filter((run) => run.status === "running").length,
+      active: activeRuns().length,
+      maxActive,
       logDir,
     });
     return;
@@ -98,15 +103,16 @@ async function handleRequest(request, response) {
       sendJson(request, response, { ok: false, error: "prompt is required" }, 400);
       return;
     }
-    const active = activeRun();
-    if (active) {
+    const active = activeRuns();
+    if (active.length >= maxActive) {
       sendJson(
         request,
         response,
         {
           ok: false,
-          error: "runner already has an active Codex run in this workspace",
-          run: active,
+          error: `runner already has ${active.length} active Codex run(s) in this workspace`,
+          run: active[0],
+          runs: active,
         },
         409,
       );
@@ -246,10 +252,8 @@ function markRunFailed(run, error) {
   run.finishedAt = new Date().toISOString();
 }
 
-function activeRun() {
-  return (
-    [...runs.values()].find((run) => run.status === "starting" || run.status === "running") || null
-  );
+function activeRuns() {
+  return [...runs.values()].filter((run) => run.status === "starting" || run.status === "running");
 }
 
 async function readJson(request) {

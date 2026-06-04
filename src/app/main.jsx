@@ -208,6 +208,15 @@ function App() {
     void loadOpenClawWorkflow();
   }, [signedIn, appView]);
 
+  useEffect(() => {
+    if (!signedIn || appView !== "openclaw" || openClawRunner.status !== "connected") return;
+    void refreshOpenClawRunnerRuns().catch(() => {});
+    const interval = setInterval(() => {
+      void refreshOpenClawRunnerRuns().catch(() => {});
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [signedIn, appView, openClawRunner.status, openClawRunner.url, openClawRunner.token]);
+
   async function loadState() {
     try {
       const nextState = await api("/api/state", { authOptional: true });
@@ -580,11 +589,14 @@ function App() {
       if (!response.ok || body.ok !== true || body.runner !== "claw-queue-codex-bridge") {
         throw new Error(body.error || `Runner returned ${response.status}`);
       }
+      const runs = await fetchOpenClawRunnerRuns(target);
       setOpenClawRunner((current) => ({
         ...current,
         status: "connected",
         error: "",
         info: body,
+        runs,
+        runsError: "",
       }));
       return body;
     } catch (error) {
@@ -627,11 +639,16 @@ function App() {
       if (!response.ok || body.ok === false) {
         throw new Error(body.error || `Runner returned ${response.status}`);
       }
+      const runs = await fetchOpenClawRunnerRuns(target).catch(() =>
+        body.run ? [body.run, ...(openClawRunner.runs || [])] : openClawRunner.runs || [],
+      );
       setOpenClawRunner((current) => ({
         ...current,
         status: "connected",
         startingIssue: null,
         lastRun: body.run || body,
+        runs,
+        runsError: "",
       }));
       return body;
     } catch (error) {
@@ -640,6 +657,29 @@ function App() {
         status: "error",
         startingIssue: null,
         error: error.message || "Could not start local Codex",
+      }));
+      throw error;
+    }
+  }
+
+  async function refreshOpenClawRunnerRuns(settings = openClawRunner) {
+    const target = settings;
+    setOpenClawRunner((current) => ({ ...current, runsLoading: true, runsError: "" }));
+    try {
+      const runs = await fetchOpenClawRunnerRuns(target);
+      setOpenClawRunner((current) => ({
+        ...current,
+        status: current.status === "error" ? "connected" : current.status,
+        runs,
+        runsLoading: false,
+        runsError: "",
+      }));
+      return runs;
+    } catch (error) {
+      setOpenClawRunner((current) => ({
+        ...current,
+        runsLoading: false,
+        runsError: error.message || "Could not load local Codex runs",
       }));
       throw error;
     }
@@ -1052,6 +1092,7 @@ function App() {
     copyOpenClawCandidatePrompt,
     updateOpenClawRunnerSettings,
     checkOpenClawRunner,
+    refreshOpenClawRunnerRuns,
     startOpenClawCodexWork,
     createOpenClawHandoff,
   };
@@ -1475,8 +1516,13 @@ function OpenClawPage(props) {
       />
       <OpenClawRunnerPanel
         runner={props.openClawRunner}
+        preferences={preferences}
         onChange={props.updateOpenClawRunnerSettings}
         onCheck={props.checkOpenClawRunner}
+      />
+      <OpenClawActiveWorkPanel
+        runner={props.openClawRunner}
+        onRefresh={props.refreshOpenClawRunnerRuns}
       />
       <section class="openclaw-grid">
         <div class="openclaw-main">
@@ -1711,9 +1757,9 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
   );
 }
 
-function OpenClawRunnerPanel({ runner, onChange, onCheck }) {
+function OpenClawRunnerPanel({ runner, preferences, onChange, onCheck }) {
   const status = runner?.status || "unknown";
-  const command = openClawRunnerCommand(runner);
+  const command = openClawRunnerCommand(runner, preferences);
   return (
     <section class="openclaw-runner">
       <div>
@@ -1758,6 +1804,60 @@ function OpenClawRunnerPanel({ runner, onChange, onCheck }) {
             "runner accepted"}
         </div>
       ) : null}
+    </section>
+  );
+}
+
+function OpenClawActiveWorkPanel({ runner, onRefresh }) {
+  const runs = Array.isArray(runner?.runs) ? runner.runs : [];
+  const activeCount = runs.filter((run) => openClawRunActive(run)).length;
+  return (
+    <section class="openclaw-active-work">
+      <header class="workflow-section-head">
+        <div>
+          <div class="section-kicker">ACTIVE WORK</div>
+          <h2>Codex issue runs</h2>
+        </div>
+        <div class="active-work-tools">
+          <span class="chip">{activeCount} active</span>
+          <button
+            type="button"
+            disabled={runner?.status !== "connected" || runner?.runsLoading}
+            onClick={() => Promise.resolve(onRefresh()).catch(() => {})}
+          >
+            <Icon name="refresh-cw" />
+            {runner?.runsLoading ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
+      </header>
+      {runner?.runsError ? <div class="workflow-banner error">{runner.runsError}</div> : null}
+      {runs.length ? (
+        <div class="active-work-list">
+          {runs.slice(0, 12).map((run) => (
+            <article class="active-work-row" key={run.id}>
+              <div class="active-work-main">
+                <a href={run.issueUrl || "#"} target="_blank" rel="noreferrer">
+                  #{run.issueNumber || "?"} {run.title || "OpenClaw issue"}
+                </a>
+                <div class="candidate-meta">
+                  <span class={`chip ${openClawRunTone(run)}`}>{openClawRunLabel(run)}</span>
+                  {run.queueId ? <span class="chip">{run.queueId}</span> : null}
+                  {run.pid ? <span class="chip">pid {run.pid}</span> : null}
+                  <span class="chip">{openClawRunWhen(run)}</span>
+                </div>
+              </div>
+              <div class="active-work-detail">
+                <code>{run.id}</code>
+                {run.logPath ? (
+                  <button onClick={() => copyText(run.logPath)}>Copy log</button>
+                ) : null}
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div class="empty">No Codex issue runs yet.</div>
+      )}
     </section>
   );
 }
@@ -2018,6 +2118,9 @@ function loadOpenClawRunnerSettings() {
       error: "",
       info: null,
       lastRun: null,
+      runs: [],
+      runsLoading: false,
+      runsError: "",
       startingIssue: null,
     };
   } catch {
@@ -2028,6 +2131,9 @@ function loadOpenClawRunnerSettings() {
       error: "",
       info: null,
       lastRun: null,
+      runs: [],
+      runsLoading: false,
+      runsError: "",
       startingIssue: null,
     };
   }
@@ -2062,14 +2168,55 @@ function openClawRunnerHeaders(runner) {
   return headers;
 }
 
-function openClawRunnerCommand(runner) {
+async function fetchOpenClawRunnerRuns(runner) {
+  const response = await fetch(`${resolveRunnerUrl(runner?.url)}/runs`, {
+    headers: openClawRunnerHeaders(runner),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.ok === false || !Array.isArray(body.runs)) {
+    throw new Error(body.error || `Runner returned ${response.status}`);
+  }
+  return body.runs;
+}
+
+function openClawRunnerCommand(runner, preferences) {
   let port = "4545";
   try {
     port = new URL(resolveRunnerUrl(runner?.url)).port || port;
   } catch {}
   const token = String(runner?.token || "").trim();
   const tokenArg = token ? ` --token ${token}` : "";
-  return `pnpm openclaw:runner -- --workspace C:\\path\\to\\openclaw --port ${port}${tokenArg}`;
+  const maxActive = Math.max(1, Math.min(16, Number(preferences?.maxParallelWorkers) || 1));
+  return `pnpm openclaw:runner -- --workspace C:\\path\\to\\openclaw --port ${port} --max-active ${maxActive}${tokenArg}`;
+}
+
+function openClawRunActive(run) {
+  return run?.status === "starting" || run?.status === "running";
+}
+
+function openClawRunTone(run) {
+  if (run?.status === "completed" || run?.status === "dry-run") return "ok";
+  if (run?.status === "failed") return "danger";
+  if (openClawRunActive(run)) return "warn";
+  return "";
+}
+
+function openClawRunLabel(run) {
+  return String(run?.status || "unknown").replace(/-/g, " ");
+}
+
+function openClawRunWhen(run) {
+  const timestamp = run?.finishedAt || run?.startedAt;
+  if (!timestamp) return "unknown";
+  const parsed = Date.parse(timestamp);
+  if (!Number.isFinite(parsed)) return "unknown";
+  const seconds = Math.max(0, Math.round((Date.now() - parsed) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return new Date(parsed).toLocaleDateString();
 }
 
 function nullableFormNumber(value) {
