@@ -10,6 +10,7 @@ Crabfleet gives OpenClaw maintainers a fleet dashboard where every Codex crabbox
 
 - **Fleet-first workflow.** Create repo-ready Crabboxes from the app, SSH, or the Go CLI and see org Codex instances grouped by person.
 - **Board-based workflow.** Create cards from prompts, GitHub issues, or PRs. Track them through Todo, Running, Human Review, and Done lanes.
+- **Claw Queue workflow.** Pick ClawSweeper-screened OpenClaw issues, hand them to local Codex, track parallel plates, and copy maintainer-ready handoffs.
 - **Issue/PR lookup.** Type `#123` in search to preview matching GitHub issues or PRs across enabled OpenClaw repos and create a card from the match.
 - **Codex run control.** Start durable run attempts, track heartbeats, watch the Ghostty WASM session grid, and take over only when the selected runtime advertises that capability.
 - **Interactive Crabboxes.** Start a standalone Codex CLI workspace for manual cloud work and attach it in the same fullscreen Ghostty grid or WebVNC.
@@ -60,6 +61,17 @@ Add users/teams to the allowlist and enable repos:
 - **From prompt:** New card → enter prompt, select repo; title is optional
 - **From issue:** Search GitHub issues → create card
 - **From PR:** Search GitHub PRs → create card for review/fix
+
+### 3b. Use Claw Queue
+
+Open `/app/claw-queue` when you want OpenClaw issue triage instead of a generic board card.
+
+- Configure role, target repo, GitHub login, usage limit, worker count, and minimum issue age.
+- Connect the local Codex bridge with `pnpm openclaw:runner -- --workspace <path-to-openclaw> --port 4545 --max-active 2 --token <secret-token>`.
+- Use Command Center first; it picks the next eligible issue, active plate, or blocked state.
+- Use Active Work to track parallel Codex/tmux/app sessions until each PR is ready, parked, or archived.
+
+See [Claw Queue docs](docs/claw-queue.md).
 
 ### 4. Watch Runs
 

@@ -126,6 +126,90 @@ Maintainer+. Searches enabled repos for issue/PR number matches.
 
 With `GITHUB_TOKEN`, lookup runs across all enabled repos. Without it, lookup falls back to the preferred repo.
 
+## Claw Queue
+
+Claw Queue uses same-origin app endpoints for OpenClaw workflow state and a separate local loopback bridge for Codex handoff.
+
+### GET /api/openclaw/workflow
+
+Viewer+. Returns the configured OpenClaw workflow pack for the current user.
+
+Optional query parameters:
+
+- `repo`: normalized `owner/repo` target repo.
+- `login`: GitHub login used for authored open PR monitoring.
+
+Response includes:
+
+- `preferences`: role, repo, GitHub login, worker count, usage limits, and issue age gate.
+- `queues`: ClawSweeper-screened queue definitions, search queries, candidates, totals, and per-queue errors.
+- `pullRequests`: authored open PR summaries with CI and ClawSweeper signals.
+- `governor`: whether new work can start, plus open PR and usage-limit reasons.
+- `process`: links to OpenClaw contributing files and maintainer guardrails.
+
+### PUT /api/openclaw/preferences
+
+Viewer+. Saves the current user's Claw Queue preferences.
+
+```json
+{
+  "roleMode": "trial_maintainer",
+  "targetRepo": "openclaw/openclaw",
+  "githubLogin": "octocat",
+  "activeOpenPrLimit": 10,
+  "dailyUsageDropLimit": 5,
+  "maxParallelWorkers": 2,
+  "minimumIssueAgeHours": 6,
+  "weeklyRemainingBaseline": 97,
+  "weeklyRemainingCurrent": 92
+}
+```
+
+### POST /api/openclaw/handoff
+
+Viewer+. Builds the short Discord-ready maintainer handoff text.
+
+```json
+{
+  "prUrl": "https://github.com/openclaw/openclaw/pull/123",
+  "issueUrl": "https://github.com/openclaw/openclaw/issues/99",
+  "title": "#123 Fix queue guard",
+  "summary": "Queue guard now respects linked PR labels.",
+  "proof": "pnpm test and Codex review passed.",
+  "ci": "CI green",
+  "clawsweeper": "ready for maintainer look"
+}
+```
+
+### Local Codex Bridge
+
+The browser talks directly to the local bridge configured in Claw Queue, normally `http://127.0.0.1:4545`.
+
+Bridge endpoints:
+
+```text
+GET /health
+GET /runs
+GET /runs/:id
+PATCH /runs/:id
+POST /start
+POST /track
+```
+
+Every bridge request requires:
+
+```text
+Authorization: Bearer <runner-token>
+```
+
+Start the bridge from the repo checkout:
+
+```bash
+pnpm openclaw:runner -- --workspace <path-to-openclaw> --port 4545 --max-active 2 --token <secret-token>
+```
+
+Add `--dry-run` to record prompts and Active Work rows without launching Codex.
+
 ## Cards
 
 ### POST /api/cards
