@@ -2321,6 +2321,49 @@
         gap: 7px;
         white-space: nowrap;
       }
+      .active-work-radar {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+        gap: 8px;
+      }
+      .radar-cell {
+        min-width: 0;
+        display: grid;
+        gap: 4px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 9px 10px;
+      }
+      .radar-cell.ok {
+        border-color: rgb(16 185 129 / 0.24);
+        background: linear-gradient(180deg, rgb(16 185 129 / 0.08), transparent 70%), var(--panel);
+      }
+      .radar-cell.warn {
+        border-color: rgb(245 158 11 / 0.28);
+        background: linear-gradient(180deg, rgb(245 158 11 / 0.08), transparent 70%), var(--panel);
+      }
+      .radar-cell span,
+      .radar-cell small {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--muted);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .radar-cell span {
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+      .radar-cell strong {
+        color: var(--ink);
+        font-size: 22px;
+        line-height: 1.05;
+      }
+      .radar-cell small {
+        font-size: 11px;
+      }
       .active-work-list {
         display: grid;
         gap: 8px;

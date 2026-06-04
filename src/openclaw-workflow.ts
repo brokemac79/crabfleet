@@ -55,6 +55,17 @@ export type OpenClawCandidate = {
   workPrompt?: string;
 };
 
+type OpenClawCandidatePriorityInput = {
+  labels?: readonly string[] | null;
+  queueId?: string | null;
+  signals?: Partial<
+    Pick<
+      OpenClawIssueSignals,
+      "sourceRepro" | "currentMainRepro" | "fixShapeClear" | "needsLiveValidation"
+    >
+  > | null;
+};
+
 export type OpenClawPrSignals = {
   readyForMaintainer: boolean;
   needsProof: boolean;
@@ -332,6 +343,46 @@ export function evaluateOpenClawGovernor(
     usageLimit: preferences.dailyUsageDropLimit,
     usageWindowAgeHours,
   };
+}
+
+export function openClawCandidatePriorityLabel(
+  candidate: OpenClawCandidatePriorityInput,
+  queue?: Pick<OpenClawQueueDefinition, "id" | "priority"> | null,
+): "P0" | "P1" | "P2" | null {
+  const labels = (candidate.labels ?? []).map((label) => String(label).toLowerCase());
+  const queueId = String(candidate.queueId || queue?.id || "").toLowerCase();
+  const queuePriority = String(queue?.priority || "").toLowerCase();
+  if (labels.includes("p0") || queuePriority === "p0" || queueId === "maintainer-p0") return "P0";
+  if (labels.includes("p1") || queuePriority === "p1" || queueId === "maintainer-p1") return "P1";
+  if (labels.includes("p2") || queuePriority === "p2" || queueId === "maintainer-p2") return "P2";
+  return null;
+}
+
+export function openClawCandidatePriorityRank(
+  candidate: OpenClawCandidatePriorityInput,
+  queue?: Pick<OpenClawQueueDefinition, "id" | "priority"> | null,
+): number {
+  const queueId = String(candidate.queueId || queue?.id || "").toLowerCase();
+  const priority = openClawCandidatePriorityLabel(candidate, queue);
+  let score =
+    priority === "P0"
+      ? 0
+      : priority === "P1"
+        ? 10
+        : priority === "P2"
+          ? 20
+          : queueId === "contributor-ready"
+            ? 40
+            : queueId === "contributor-clear-shape"
+              ? 50
+              : queueId === "contributor-source-repro"
+                ? 60
+                : 80;
+  if (candidate.signals?.sourceRepro) score -= 3;
+  if (candidate.signals?.currentMainRepro) score -= 2;
+  if (candidate.signals?.fixShapeClear) score -= 1;
+  if (candidate.signals?.needsLiveValidation) score += 4;
+  return score;
 }
 
 export function buildOpenClawIssuePrompt(candidate: OpenClawCandidate): string {

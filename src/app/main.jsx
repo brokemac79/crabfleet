@@ -1,7 +1,11 @@
 import { render } from "preact";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { api } from "./api.js";
-import { buildOpenClawIssuePrompt } from "../openclaw-workflow.ts";
+import {
+  buildOpenClawIssuePrompt,
+  openClawCandidatePriorityLabel,
+  openClawCandidatePriorityRank,
+} from "../openclaw-workflow.ts";
 import {
   canMaintain,
   canOwn,
@@ -2023,6 +2027,7 @@ function OpenClawWorkerLane({
   onCreate,
 }) {
   const prUrl = openClawValidPrUrl(lane.run?.prUrl);
+  const priorityLabel = lane.candidate ? openClawCandidatePriorityLabel(lane.candidate) : null;
   return (
     <article class={`worker-lane ${lane.kind}`}>
       <header class="worker-lane-head">
@@ -2061,6 +2066,7 @@ function OpenClawWorkerLane({
           </a>
           <div class="candidate-meta">
             <span class="chip ok">eligible</span>
+            {priorityLabel ? <span class="chip warn">{priorityLabel}</span> : null}
             <span class="chip">{lane.candidate.queueId}</span>
             {lane.candidate.signals.sourceRepro ? <span class="chip">source repro</span> : null}
             {lane.candidate.signals.currentMainRepro ? (
@@ -2124,6 +2130,7 @@ function OpenClawWorkerLane({
 function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
   const runs = Array.isArray(runner?.runs) ? runner.runs : [];
   const mission = openClawMissionControl(runs, runner);
+  const readinessRadar = openClawReadinessRadar(runs);
   const activeCount = runs.filter((run) => openClawRunActive(run)).length;
   const maxActive = runner?.info?.maxActive || "-";
   const readyCount = runs.filter((run) => run?.status === "ready").length;
@@ -2254,6 +2261,17 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
               Copy focus prompt
             </button>
           </div>
+        </section>
+      ) : null}
+      {runs.length ? (
+        <section class="active-work-radar" aria-label="Active work closeout radar">
+          {readinessRadar.map((item) => (
+            <div class={`radar-cell ${item.tone}`} key={item.label}>
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+              <small>{item.detail}</small>
+            </div>
+          ))}
         </section>
       ) : null}
       {runs.length ? (
@@ -2891,7 +2909,7 @@ function openClawWorkerRunway(queues, runner, preferences) {
       subtitle: run
         ? openClawMissionLabel(run)
         : candidate
-          ? candidate.queueId || "OpenClaw queue"
+          ? openClawCandidateLaneSubtitle(candidate)
           : "Waiting for an eligible candidate",
     });
   }
@@ -2908,21 +2926,34 @@ function openClawWorkerRunway(queues, runner, preferences) {
 }
 
 function openClawRunwayCandidates(queues, runner, limit) {
-  const seen = new Set();
-  const results = [];
+  const bestByIssue = new Map();
+  let order = 0;
   for (const queue of Array.isArray(queues) ? queues : []) {
     for (const candidate of Array.isArray(queue?.candidates) ? queue.candidates : []) {
       const withQueue = { ...candidate, queueId: candidate.queueId || queue.definition?.id || "" };
       const key = openClawIssueKey(withQueue.number, withQueue.url);
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
+      if (!key) continue;
       if (openClawRunnerHasIssueRun(runner, withQueue.number, withQueue.url)) continue;
       if (!withQueue.signals?.readyForPickup) continue;
-      results.push(withQueue);
-      if (results.length >= limit) return results;
+      const entry = {
+        candidate: withQueue,
+        score: openClawCandidatePriorityRank(withQueue, queue?.definition),
+        order: order++,
+      };
+      const existing = bestByIssue.get(key);
+      if (
+        !existing ||
+        entry.score < existing.score ||
+        (entry.score === existing.score && entry.order < existing.order)
+      ) {
+        bestByIssue.set(key, entry);
+      }
     }
   }
-  return results;
+  return [...bestByIssue.values()]
+    .sort((left, right) => left.score - right.score || left.order - right.order)
+    .slice(0, Math.max(0, limit))
+    .map((entry) => entry.candidate);
 }
 
 function openClawRunwaySummary(filled, empty, preferredCapacity, capacity) {
@@ -2938,11 +2969,18 @@ function openClawRunwaySummary(filled, empty, preferredCapacity, capacity) {
   return `All ${capacity} worker ${capacity === 1 ? "lane is" : "lanes are"} occupied. Focus on proof, PR readiness, CI, and ClawSweeper.`;
 }
 
+function openClawCandidateLaneSubtitle(candidate) {
+  const priority = openClawCandidatePriorityLabel(candidate);
+  const queueId = candidate?.queueId || "OpenClaw queue";
+  return priority ? `${priority} - ${queueId}` : queueId;
+}
+
 function openClawCandidateWhy(candidate) {
   const bits = [];
-  if (candidate?.queueId?.includes("p0")) bits.push("P0 first");
-  else if (candidate?.queueId?.includes("p1")) bits.push("P1 next");
-  else if (candidate?.queueId?.includes("p2")) bits.push("P2 queue");
+  const priority = openClawCandidatePriorityLabel(candidate);
+  if (priority === "P0") bits.push("P0 first");
+  else if (priority === "P1") bits.push("P1 next");
+  else if (priority === "P2") bits.push("P2 queue");
   if (candidate?.signals?.sourceRepro) bits.push("source repro");
   if (candidate?.signals?.fixShapeClear) bits.push("clear fix shape");
   if (candidate?.signals?.currentMainRepro) bits.push("current-main proof");
@@ -2970,12 +3008,16 @@ function openClawWorkerRunwayBrief(runway, runner) {
           .join("\n");
       }
       if (lane.candidate) {
+        const priority = openClawCandidatePriorityLabel(lane.candidate);
         return [
           `Lane ${lane.index}: suggested #${lane.candidate.number} ${lane.candidate.title}`,
           `Issue: ${lane.candidate.url}`,
+          priority ? `Priority: ${priority}` : "",
           `Queue: ${lane.candidate.queueId}`,
           `Why: ${openClawCandidateWhy(lane.candidate)}`,
-        ].join("\n");
+        ]
+          .filter(Boolean)
+          .join("\n");
       }
       return `Lane ${lane.index}: open, no eligible queue item loaded`;
     }),
@@ -3114,6 +3156,52 @@ function openClawRunChecklist(run) {
   ];
 }
 
+function openClawReadinessRadar(runs) {
+  const rows = Array.isArray(runs) ? runs.filter((run) => run && !run.archivedAt) : [];
+  const total = rows.length;
+  const countMissing = (label) =>
+    rows.filter(
+      (run) => !openClawRunChecklist(run).some((item) => item.label === label && item.done),
+    ).length;
+  const ready = rows.filter((run) => run?.status === "ready").length;
+  const missingPr = countMissing("PR");
+  const missingProof = countMissing("Proof");
+  const missingReview = countMissing("Review");
+  const missingCi = countMissing("CI/ClawSweeper");
+  return [
+    {
+      label: "Ready",
+      value: `${ready}/${total}`,
+      detail: "handoff rows",
+      tone: ready ? "ok" : "",
+    },
+    {
+      label: "Needs PR",
+      value: String(missingPr),
+      detail: missingPr ? "link or open PR" : "all linked",
+      tone: missingPr ? "warn" : "ok",
+    },
+    {
+      label: "Needs proof",
+      value: String(missingProof),
+      detail: missingProof ? "tests or Mantis" : "proof noted",
+      tone: missingProof ? "warn" : "ok",
+    },
+    {
+      label: "Needs review",
+      value: String(missingReview),
+      detail: missingReview ? "Codex review" : "review noted",
+      tone: missingReview ? "warn" : "ok",
+    },
+    {
+      label: "CI/ClawSweeper",
+      value: String(missingCi),
+      detail: missingCi ? "still unknown" : "state noted",
+      tone: missingCi ? "warn" : "ok",
+    },
+  ];
+}
+
 function openClawRunKnownText(run) {
   return [run?.status, run?.note, openClawValidPrUrl(run?.prUrl), run?.title, run?.queueId]
     .filter(Boolean)
@@ -3131,11 +3219,16 @@ function openClawActiveWorkBrief(runs, runner) {
   const activeCount = plates.filter((run) => openClawRunActive(run)).length;
   const readyCount = plates.filter((run) => run?.status === "ready").length;
   const parkedCount = plates.filter((run) => run?.status === "parked").length;
+  const radar = openClawReadinessRadar(plates);
+  const closeoutLine = radar.length
+    ? `Closeout: ${radar.map((item) => `${item.label} ${item.value}`).join("; ")}`
+    : "";
   const maxActive = runner?.info?.maxActive || "-";
   return [
     "OpenClaw active work brief",
     `Runner: ${runner?.status || "unknown"}${runner?.info?.dryRun ? " (dry-run)" : ""}`,
     `Plates: ${plates.length}; active ${activeCount}/${maxActive}; ready ${readyCount}; parked ${parkedCount}; inactive history ${inactiveCount}`,
+    closeoutLine,
     mission.focusRun
       ? `Focus: #${mission.focusRun.issueNumber || "?"} ${mission.focusRun.title || "OpenClaw issue"} - ${mission.label}`
       : "Focus: no active plates",

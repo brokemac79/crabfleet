@@ -6,6 +6,8 @@ import {
   buildOpenClawIssueSearchQuery,
   evaluateOpenClawGovernor,
   normalizeOpenClawPreferences,
+  openClawCandidatePriorityLabel,
+  openClawCandidatePriorityRank,
   openClawIssueSignals,
   openClawPrSignals,
   queuesForOpenClawRole,
@@ -82,6 +84,35 @@ test("issue age gate can be lowered for fork testing", () => {
   assert.equal(defaultGate.ageGate, "too-new");
   assert.equal(testGate.readyForPickup, true);
   assert.equal(testGate.ageGate, "eligible");
+});
+
+test("candidate priority ranking keeps maintainer priority ahead of overlapping contributor queues", () => {
+  const p1Candidate = {
+    labels: ["P1", "clawsweeper:queueable-fix", "clawsweeper:source-repro"],
+    queueId: "contributor-source-repro",
+    signals: {
+      sourceRepro: true,
+      currentMainRepro: false,
+      fixShapeClear: true,
+      needsLiveValidation: false,
+    },
+  };
+  const clearShapeCandidate = {
+    labels: ["clawsweeper:queueable-fix", "clawsweeper:fix-shape-clear"],
+    queueId: "contributor-clear-shape",
+    signals: {
+      sourceRepro: false,
+      currentMainRepro: false,
+      fixShapeClear: true,
+      needsLiveValidation: false,
+    },
+  };
+
+  assert.equal(openClawCandidatePriorityLabel(p1Candidate), "P1");
+  assert.equal(
+    openClawCandidatePriorityRank(p1Candidate) < openClawCandidatePriorityRank(clearShapeCandidate),
+    true,
+  );
 });
 
 test("governor pauses new work at personal PR and usage limits", () => {
