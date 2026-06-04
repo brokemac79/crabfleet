@@ -2642,6 +2642,129 @@
         font-size: 12px;
         white-space: nowrap;
       }
+      .active-run-log {
+        grid-column: 1 / -1;
+        display: grid;
+        gap: 10px;
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgb(2 6 23 / 0.5);
+        padding: 10px;
+      }
+      .active-run-log-head {
+        display: flex;
+        align-items: start;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .active-run-log-head > div:first-child {
+        min-width: 0;
+        display: grid;
+        gap: 4px;
+      }
+      .active-run-log-head strong {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--ink);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+        font-size: 12px;
+      }
+      .active-run-log-actions,
+      .active-run-log-meta {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .active-run-log-actions button {
+        min-height: 30px;
+        padding: 0 9px;
+        font-size: 12px;
+      }
+      .active-run-log-meta {
+        justify-content: flex-start;
+      }
+      .active-run-log-meta span {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--panel);
+        color: var(--muted);
+        padding: 4px 8px;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .active-run-log-stream {
+        display: grid;
+        gap: 6px;
+        max-height: 310px;
+        overflow: auto;
+        overscroll-behavior: contain;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #05070d;
+        padding: 8px;
+      }
+      .run-log-entry {
+        display: grid;
+        gap: 5px;
+        border-left: 3px solid var(--line-strong);
+        border-radius: 6px;
+        background: rgb(255 255 255 / 0.03);
+        padding: 7px 8px;
+      }
+      .run-log-entry.ok {
+        border-left-color: var(--success);
+      }
+      .run-log-entry.warn {
+        border-left-color: var(--warning);
+      }
+      .run-log-entry.danger {
+        border-left-color: #f87171;
+      }
+      .run-log-entry-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+      .run-log-entry-head time {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 600;
+        text-transform: none;
+      }
+      .run-log-entry pre {
+        margin: 0;
+        overflow: auto;
+        color: #dbe4f0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .active-run-log .terminal-command {
+        width: 100%;
+        justify-content: flex-start;
+        overflow: hidden;
+        border-color: var(--line);
+        background: var(--panel);
+      }
+      .active-run-log .terminal-command code {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       .openclaw-grid {
         display: grid;
         grid-template-columns: minmax(0, 1fr) minmax(300px, 0.42fr);
@@ -2956,6 +3079,13 @@
           display: grid;
           grid-template-columns: 1fr;
           align-items: start;
+        }
+        .active-run-log-head {
+          display: grid;
+          grid-template-columns: 1fr;
+        }
+        .active-run-log-actions {
+          justify-content: flex-start;
         }
         .command-title-row {
           align-items: start;

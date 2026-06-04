@@ -46,6 +46,27 @@ test("local Codex bridge dry-runs starts and exposes private-network CORS", asyn
   const runs = await getRuns(base, token);
   assert.equal(runs.runs[0].id, started.body.run.id);
   assert.equal(runs.runs[0].status, "dry-run");
+
+  const log = await getRunLog(base, token, started.body.run.id);
+  assert.equal(log.ok, true);
+  assert.equal(log.log.exists, true);
+  assert.equal(
+    log.log.entries.some(
+      (entry: any) => entry.type === "prompt" && /dry-run prompt/.test(entry.text),
+    ),
+    true,
+  );
+
+  await fs.appendFile(
+    started.body.run.logPath,
+    Array.from({ length: 30 }, (_, index) =>
+      JSON.stringify({ type: "agent_message", message: `default tail event ${index}` }),
+    ).join("\n") + "\n",
+    "utf8",
+  );
+  const defaultTail = await getRunLog(base, token, started.body.run.id);
+  assert.equal(defaultTail.ok, true);
+  assert.equal(defaultTail.log.entries.length >= 30, true);
 });
 
 test("local Codex bridge marks log setup failures as failed runs", async (t) => {
@@ -274,6 +295,12 @@ test("local Codex bridge tracks parallel active runs up to max-active", async (t
   const runs = await getRuns(base, token);
   assert.equal(runs.runs.filter((run: any) => run.status === "running").length, 2);
 
+  const liveLog = await waitForRunLog(base, token, first.body.run.id, /fake codex started/);
+  assert.equal(
+    liveLog.entries.some((entry: any) => /fake codex started/.test(entry.text)),
+    true,
+  );
+
   await waitForRun(base, token, first.body.run.id, "completed");
   await waitForRun(base, token, second.body.run.id, "completed");
 });
@@ -374,6 +401,25 @@ async function waitForRun(
   throw new Error(`run ${id} did not reach ${status}: ${JSON.stringify(body)}`);
 }
 
+async function waitForRunLog(
+  base: string,
+  token: string,
+  id: string,
+  pattern: RegExp,
+): Promise<Record<string, any>> {
+  let body: any = {};
+  for (let index = 0; index < 60; index += 1) {
+    body = await getRunLog(base, token, id);
+    const text = [
+      body.log?.text || "",
+      ...(body.log?.entries || []).map((entry: any) => entry.text || ""),
+    ].join("\n");
+    if (pattern.test(text)) return body.log;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`run ${id} log did not match ${pattern}: ${JSON.stringify(body)}`);
+}
+
 async function postStart(base: string, token: string, prompt: string) {
   const response = await fetch(`${base}/start`, {
     method: "POST",
@@ -448,14 +494,24 @@ async function getRuns(base: string, token: string) {
   return response.json();
 }
 
+async function getRunLog(base: string, token: string, id: string) {
+  const response = await fetch(`${base}/runs/${encodeURIComponent(id)}/log`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return response.json();
+}
+
 async function writeFakeCodexCommand(directory: string): Promise<string> {
   const fakeScript = path.join(directory, "fake-codex.mjs");
   await fs.writeFile(
     fakeScript,
     [
       "import { setTimeout } from 'node:timers/promises';",
+      "console.log(JSON.stringify({ type: 'agent_message', message: 'fake codex started' }));",
+      "console.error('fake codex stderr proof');",
       "process.stdin.resume();",
       "await setTimeout(1200);",
+      "console.log(JSON.stringify({ type: 'agent_message', message: 'fake codex completed' }));",
       "process.exit(0);",
       "",
     ].join("\n"),

@@ -87,6 +87,20 @@ async function handleRequest(request, response) {
     return;
   }
 
+  const logMatch = url.pathname.match(/^\/runs\/([^/]+)\/log$/);
+  if (logMatch && request.method === "GET") {
+    if (!authorized(request)) return unauthorized(request, response);
+    const id = decodeURIComponent(logMatch[1] || "");
+    const run = runs.get(id);
+    if (!run) {
+      sendJson(request, response, { ok: false, error: "run not found" }, 404);
+      return;
+    }
+    const log = await readRunLog(run, url);
+    sendJson(request, response, { ok: true, run, log });
+    return;
+  }
+
   const runMatch = url.pathname.match(/^\/runs\/([^/]+)$/);
   if (runMatch && request.method === "GET") {
     if (!authorized(request)) return unauthorized(request, response);
@@ -375,6 +389,165 @@ function visibleRunForIssue(issueNumber, issueUrl) {
   const key = issueKey(issueNumber, issueUrl);
   if (!key) return null;
   return unarchivedRuns().find((run) => issueKey(run.issueNumber, run.issueUrl) === key) || null;
+}
+
+async function readRunLog(run, url) {
+  const bytesParam = url.searchParams.get("bytes") ?? undefined;
+  const entriesParam = url.searchParams.get("entries") ?? undefined;
+  const maxBytes = Math.max(4096, Math.min(1_000_000, integer(bytesParam, 200_000)));
+  const maxEntries = Math.max(20, Math.min(500, integer(entriesParam, 160)));
+  const logPath = safeRunLogPath(run);
+  let stat;
+  try {
+    stat = await fsp.stat(logPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return {
+        path: logPath,
+        exists: false,
+        size: 0,
+        truncated: false,
+        entries: [],
+        text: "",
+      };
+    }
+    throw error;
+  }
+
+  const start = Math.max(0, stat.size - maxBytes);
+  const length = stat.size - start;
+  const handle = await fsp.open(logPath, "r");
+  let text = "";
+  try {
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, start);
+    text = buffer.toString("utf8");
+  } finally {
+    await handle.close();
+  }
+
+  let truncated = start > 0;
+  if (truncated) {
+    const newline = text.indexOf("\n");
+    if (newline !== -1) text = text.slice(newline + 1);
+  }
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  const selected = lines.slice(-maxEntries);
+  return {
+    path: logPath,
+    exists: true,
+    size: stat.size,
+    truncated: truncated || lines.length > selected.length,
+    entries: selected.map((line, index) =>
+      normalizeRunLogLine(line, lines.length - selected.length + index),
+    ),
+    text: selected.join("\n"),
+    updatedAt: new Date(stat.mtimeMs).toISOString(),
+  };
+}
+
+function safeRunLogPath(run) {
+  const fallback = path.join(logDir, `${run.id}.jsonl`);
+  const resolved = path.resolve(String(run.logPath || fallback));
+  const root = path.resolve(logDir);
+  const relative = path.relative(root, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("run log path is outside the bridge log directory");
+  }
+  return resolved;
+}
+
+function normalizeRunLogLine(line, index) {
+  try {
+    const parsed = JSON.parse(line);
+    return normalizeRunLogEvent(parsed, index, line);
+  } catch {
+    return {
+      index,
+      type: "output",
+      label: "Output",
+      text: clean(line, 8000),
+    };
+  }
+}
+
+function normalizeRunLogEvent(event, index, line) {
+  const type = clean(event?.type, 80) || "event";
+  const at = clean(event?.at, 80) || null;
+  const base = { index, type, at };
+  if (type === "request") {
+    return {
+      ...base,
+      label: "Start request",
+      text: [
+        event.issueNumber ? `Issue #${event.issueNumber}` : "",
+        clean(event.title, 220),
+        event.queueId ? `Queue ${clean(event.queueId, 80)}` : "",
+        event.dryRun ? "dry-run" : "",
+      ]
+        .filter(Boolean)
+        .join(" | "),
+    };
+  }
+  if (type === "prompt") {
+    return {
+      ...base,
+      label: "Prompt",
+      text: summarizePrompt(event.text),
+    };
+  }
+  if (type === "stderr") {
+    return {
+      ...base,
+      label: "stderr",
+      text: clean(event.text, 8000),
+    };
+  }
+  if (type === "stdin-error" || type === "error") {
+    return {
+      ...base,
+      label: "Error",
+      text: clean(event.error || event.text || line, 8000),
+    };
+  }
+  if (type === "exit") {
+    return {
+      ...base,
+      label: "Exit",
+      text: `code=${event.code ?? "null"}${event.signal ? ` signal=${event.signal}` : ""}`,
+    };
+  }
+  return {
+    ...base,
+    label: eventLabel(type),
+    text: runLogEventText(event, line),
+  };
+}
+
+function summarizePrompt(value) {
+  const text = clean(value, 12_000);
+  const firstLines = text.split(/\r?\n/).slice(0, 28).join("\n");
+  return text.length > firstLines.length ? `${firstLines}\n...` : firstLines;
+}
+
+function runLogEventText(event, fallback) {
+  const candidates = [
+    event?.message,
+    event?.text,
+    event?.summary,
+    event?.content,
+    event?.prompt,
+    event?.error,
+    event?.delta,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return clean(candidate, 8000);
+  }
+  return clean(JSON.stringify(event), 8000) || clean(fallback, 8000);
+}
+
+function eventLabel(type) {
+  return type.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function issueKey(issueNumber, issueUrl) {

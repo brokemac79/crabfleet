@@ -2272,6 +2272,82 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
   const [busyRun, setBusyRun] = useState(null);
   const [actionError, setActionError] = useState("");
   const [prEditor, setPrEditor] = useState({ runId: null, value: "" });
+  const [logViewer, setLogViewer] = useState({
+    runId: null,
+    loading: false,
+    error: "",
+    log: null,
+  });
+  const selectedLogRun = logViewer.runId
+    ? runs.find((run) => run.id === logViewer.runId) || null
+    : null;
+  const selectedLogRunState = selectedLogRun
+    ? `${selectedLogRun.id}:${selectedLogRun.status}:${selectedLogRun.updatedAt}:${selectedLogRun.finishedAt}`
+    : "";
+  useEffect(() => {
+    if (!selectedLogRun || runner?.status !== "connected") return;
+    let cancelled = false;
+    async function refreshLog(silent = true) {
+      setLogViewer((current) =>
+        current.runId === selectedLogRun.id
+          ? { ...current, loading: silent ? current.loading : true, error: "" }
+          : current,
+      );
+      try {
+        const result = await fetchOpenClawRunnerRunLog(runner, selectedLogRun);
+        if (cancelled) return;
+        setLogViewer((current) =>
+          current.runId === selectedLogRun.id
+            ? { ...current, loading: false, error: "", log: result.log }
+            : current,
+        );
+      } catch (error) {
+        if (cancelled) return;
+        setLogViewer((current) =>
+          current.runId === selectedLogRun.id
+            ? {
+                ...current,
+                loading: false,
+                error: error.message || "Could not load Codex log",
+              }
+            : current,
+        );
+      }
+    }
+    void refreshLog(true);
+    if (!openClawRunActive(selectedLogRun)) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    const interval = setInterval(() => void refreshLog(true), 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [selectedLogRunState, logViewer.runId, runner?.url, runner?.token, runner?.status]);
+  async function openRunLog(run, silent = false) {
+    setLogViewer((current) => ({
+      runId: run.id,
+      loading: !silent,
+      error: "",
+      log: current.runId === run.id ? current.log : null,
+    }));
+    try {
+      const result = await fetchOpenClawRunnerRunLog(runner, run);
+      setLogViewer((current) =>
+        current.runId === run.id
+          ? { ...current, loading: false, error: "", log: result.log }
+          : current,
+      );
+    } catch (error) {
+      setLogViewer((current) =>
+        current.runId === run.id
+          ? { ...current, loading: false, error: error.message || "Could not load Codex log" }
+          : current,
+      );
+    }
+  }
   async function update(run, patch) {
     setActionError("");
     setBusyRun(run.id);
@@ -2465,6 +2541,13 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
                       <button onClick={() => copyText(run.logPath)}>Copy log</button>
                     ) : null}
                     <button
+                      disabled={runner?.status !== "connected"}
+                      onClick={() => openRunLog(run)}
+                    >
+                      <Icon name="terminal" />
+                      {logViewer.runId === run.id ? "Watching" : "Watch log"}
+                    </button>
+                    <button
                       disabled={isLive || busyRun === run.id || run.status === "parked"}
                       onClick={() =>
                         update(run, {
@@ -2516,6 +2599,18 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
                     </form>
                   ) : null}
                 </div>
+                {logViewer.runId === run.id ? (
+                  <OpenClawRunLogPanel
+                    run={run}
+                    log={logViewer.log}
+                    loading={logViewer.loading}
+                    error={logViewer.error}
+                    onRefresh={() => openRunLog(run)}
+                    onClose={() =>
+                      setLogViewer({ runId: null, loading: false, error: "", log: null })
+                    }
+                  />
+                ) : null}
               </article>
             );
           })}
@@ -2523,6 +2618,65 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
       ) : (
         <div class="empty">No Codex issue runs yet.</div>
       )}
+    </section>
+  );
+}
+
+function OpenClawRunLogPanel({ run, log, loading, error, onRefresh, onClose }) {
+  const entries = Array.isArray(log?.entries) ? log.entries : [];
+  return (
+    <section class="active-run-log" aria-label={`Codex log for issue ${run.issueNumber || "?"}`}>
+      <header class="active-run-log-head">
+        <div>
+          <span class="section-kicker">LIVE LOG</span>
+          <strong>{run.id}</strong>
+        </div>
+        <div class="active-run-log-actions">
+          <span class={`chip ${openClawRunActive(run) ? "warn" : "ok"}`}>
+            {openClawRunActive(run) ? "polling" : "snapshot"}
+          </span>
+          <button type="button" disabled={loading} onClick={onRefresh}>
+            <Icon name="refresh-cw" />
+            {loading ? "Loading..." : "Refresh"}
+          </button>
+          <button type="button" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </header>
+      {error ? <div class="workflow-banner error">{error}</div> : null}
+      <div class="active-run-log-meta">
+        <span>{log?.exists === false ? "No log file yet" : `${entries.length} events`}</span>
+        {log?.truncated ? <span>tail view</span> : null}
+        {log?.size ? <span>{formatBytes(log.size)}</span> : null}
+        {log?.updatedAt ? (
+          <span>updated {openClawRunWhen({ startedAt: log.updatedAt })}</span>
+        ) : null}
+      </div>
+      <div class="active-run-log-stream">
+        {entries.length ? (
+          entries.map((entry) => (
+            <article
+              class={`run-log-entry ${openClawRunLogEntryTone(entry)}`}
+              key={`${entry.index}-${entry.type}`}
+            >
+              <div class="run-log-entry-head">
+                <span>{entry.label || entry.type || "Event"}</span>
+                {entry.at ? <time>{entry.at}</time> : null}
+              </div>
+              <pre>{openClawRunLogEntryText(entry)}</pre>
+            </article>
+          ))
+        ) : (
+          <div class="empty">{loading ? "Loading Codex log..." : "No log entries yet."}</div>
+        )}
+      </div>
+      {log?.path ? (
+        <button class="terminal-command" type="button" onClick={() => copyText(log.path)}>
+          <Icon name="copy" />
+          <code>{log.path}</code>
+        </button>
+      ) : null}
     </section>
   );
 }
@@ -2549,9 +2703,7 @@ function OpenClawQueue({
       </header>
       <code class="query-line">{queue.query}</code>
       {queue.error ? (
-        <div class={`workflow-banner ${queue.candidates.length ? "" : "error"}`}>
-          {queue.error}
-        </div>
+        <div class={`workflow-banner ${queue.candidates.length ? "" : "error"}`}>{queue.error}</div>
       ) : null}
       <div class="candidate-list">
         {queue.candidates.length ? (
@@ -2954,6 +3106,20 @@ async function fetchOpenClawRunnerRuns(runner) {
   return body.runs;
 }
 
+async function fetchOpenClawRunnerRunLog(runner, run) {
+  const response = await fetch(
+    `${resolveRunnerUrl(runner?.url)}/runs/${encodeURIComponent(run.id)}/log?entries=180&bytes=260000`,
+    {
+      headers: openClawRunnerHeaders(runner),
+    },
+  );
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.ok === false || !body.log) {
+    throw new Error(body.error || `Runner returned ${response.status}`);
+  }
+  return body;
+}
+
 function openClawRunnerCommand(runner, preferences) {
   let port = "4545";
   try {
@@ -3005,6 +3171,42 @@ function openClawRunTone(run) {
     return "warn";
   }
   return "";
+}
+
+function openClawRunLogEntryTone(entry) {
+  const type = String(entry?.type || "").toLowerCase();
+  const text = String(entry?.text || "");
+  if (type === "exit") {
+    if (/\bsignal=/i.test(text) || /code=(?!0\b)/i.test(text)) return "danger";
+    return "ok";
+  }
+  if (type.includes("error")) return "danger";
+  if (type === "stderr" || /warning|timeout|retry/i.test(text)) return "warn";
+  if (type.includes("agent")) return "ok";
+  return "";
+}
+
+function openClawRunLogEntryText(entry) {
+  const direct = String(entry?.text || entry?.message || "").trim();
+  if (direct) return direct;
+  try {
+    return JSON.stringify(entry, null, 2);
+  } catch {
+    return "No event details.";
+  }
+}
+
+function formatBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB"];
+  let amount = bytes / 1024;
+  let unit = units[0];
+  for (let index = 1; index < units.length && amount >= 1024; index += 1) {
+    amount /= 1024;
+    unit = units[index];
+  }
+  return `${amount >= 10 ? amount.toFixed(0) : amount.toFixed(1)} ${unit}`;
 }
 
 function openClawRunLabel(run) {

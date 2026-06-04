@@ -158,9 +158,12 @@ Use row actions:
 - **Resume**: copy the resume prompt for that plate.
 - **Handoff**: copy the maintainer handoff.
 - **Link PR**: attach the GitHub PR URL.
+- **Watch log**: open a live local Codex log viewer. Running rows poll automatically; completed rows show a snapshot.
 - **Ready**: mark a row ready for maintainer look once proof, PR, CI, Codex review, and ClawSweeper status are acceptable.
 - **Park**: stop when proof is insufficient, Mantis is unavailable, or a maintainer/reporter/security/product decision is needed.
 - **Archive**: remove completed, stale, failed, or dry-run rows from the visible active list.
+
+The log viewer reads the bridge's local JSONL run log and shows a bounded tail, not the full file. It is meant for quick situational awareness while multiple Codex sessions are running. The underlying log path stays local and can be copied when deeper debugging is needed.
 
 ## PR Monitor And Handoffs
 
@@ -233,6 +236,7 @@ The page uses the local bridge at the configured runner URL:
 GET /health
 GET /runs
 GET /runs/:id
+GET /runs/:id/log
 PATCH /runs/:id
 POST /start
 POST /track
