@@ -120,6 +120,7 @@ function App() {
   const refPreviewTimer = useRef(null);
   const refPreviewSeq = useRef(0);
   const openClawSeq = useRef(0);
+  const openClawRunnerAutoChecked = useRef(false);
   const draggedSessionId = useRef(null);
   const autoLoginStarted = useRef(false);
 
@@ -207,6 +208,21 @@ function App() {
     if (!signedIn || appView !== "openclaw") return;
     void loadOpenClawWorkflow();
   }, [signedIn, appView]);
+
+  useEffect(() => {
+    if (!signedIn || appView !== "openclaw" || openClawRunner.status !== "unknown") return;
+    if (!openClawRunner.saved) return;
+    if (openClawRunnerAutoChecked.current) return;
+    openClawRunnerAutoChecked.current = true;
+    void checkOpenClawRunner(openClawRunner).catch(() => {});
+  }, [
+    signedIn,
+    appView,
+    openClawRunner.status,
+    openClawRunner.url,
+    openClawRunner.token,
+    openClawRunner.saved,
+  ]);
 
   useEffect(() => {
     if (!signedIn || appView !== "openclaw" || openClawRunner.status !== "connected") return;
@@ -1597,6 +1613,42 @@ function OpenClawPage(props) {
         onChange={props.updateOpenClawRunnerSettings}
         onCheck={props.checkOpenClawRunner}
       />
+      <OpenClawWorkerRunway
+        queues={queues}
+        runner={props.openClawRunner}
+        preferences={preferences}
+        canCreate={canCreate}
+        canStartWork={canStartWork}
+        busyIssue={busyIssue}
+        onCopyPrompt={props.copyOpenClawCandidatePrompt}
+        onTrack={async (candidate) => {
+          setActionError("");
+          try {
+            await props.trackOpenClawCandidateWork(candidate);
+          } catch (error) {
+            setActionError(error.message || "Could not track local Codex work");
+          }
+        }}
+        onStartCodex={async (candidate) => {
+          setActionError("");
+          try {
+            await props.startOpenClawCodexWork(candidate);
+          } catch (error) {
+            setActionError(error.message || "Could not start local Codex");
+          }
+        }}
+        onCreate={async (candidate) => {
+          setActionError("");
+          setBusyIssue(candidate.number);
+          try {
+            await props.createOpenClawCandidateCard(candidate);
+          } catch (error) {
+            setActionError(error.message || "Could not create card");
+          } finally {
+            setBusyIssue(null);
+          }
+        }}
+      />
       <OpenClawActiveWorkPanel
         runner={props.openClawRunner}
         onRefresh={props.refreshOpenClawRunnerRuns}
@@ -1896,6 +1948,176 @@ function OpenClawRunnerPanel({ runner, preferences, onChange, onCheck }) {
         </div>
       ) : null}
     </section>
+  );
+}
+
+function OpenClawWorkerRunway({
+  queues,
+  runner,
+  preferences,
+  canCreate,
+  canStartWork,
+  busyIssue,
+  onCopyPrompt,
+  onTrack,
+  onStartCodex,
+  onCreate,
+}) {
+  const runway = openClawWorkerRunway(queues, runner, preferences);
+  const [copied, setCopied] = useState(false);
+  async function copyPlan() {
+    await copyText(openClawWorkerRunwayBrief(runway, runner));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1600);
+  }
+  return (
+    <section class="openclaw-worker-runway">
+      <header class="workflow-section-head">
+        <div>
+          <div class="section-kicker">WORKER RUNWAY</div>
+          <h2>Parallel plate planner</h2>
+          <p>{runway.summary}</p>
+        </div>
+        <div class="runway-head-actions">
+          <span class="chip">
+            {runway.filled}/{runway.capacity} filled
+          </span>
+          <span class={`chip ${runway.empty ? "ok" : "warn"}`}>
+            {runway.empty} open {runway.empty === 1 ? "lane" : "lanes"}
+          </span>
+          <button type="button" onClick={copyPlan}>
+            <Icon name="clipboard-list" />
+            {copied ? "Copied" : "Copy lane plan"}
+          </button>
+        </div>
+      </header>
+      <div class="worker-lanes">
+        {runway.lanes.map((lane) => (
+          <OpenClawWorkerLane
+            key={lane.id}
+            lane={lane}
+            runner={runner}
+            canCreate={canCreate}
+            canStartWork={canStartWork}
+            busyIssue={busyIssue}
+            onCopyPrompt={onCopyPrompt}
+            onTrack={onTrack}
+            onStartCodex={onStartCodex}
+            onCreate={onCreate}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function OpenClawWorkerLane({
+  lane,
+  runner,
+  canCreate,
+  canStartWork,
+  busyIssue,
+  onCopyPrompt,
+  onTrack,
+  onStartCodex,
+  onCreate,
+}) {
+  const prUrl = openClawValidPrUrl(lane.run?.prUrl);
+  return (
+    <article class={`worker-lane ${lane.kind}`}>
+      <header class="worker-lane-head">
+        <span class="lane-number">{lane.index}</span>
+        <div>
+          <strong>{lane.title}</strong>
+          <span>{lane.subtitle}</span>
+        </div>
+      </header>
+      {lane.run ? (
+        <div class="worker-lane-body">
+          <a href={lane.run.issueUrl || "#"} target="_blank" rel="noreferrer">
+            #{lane.run.issueNumber || "?"} {lane.run.title || "OpenClaw issue"}
+          </a>
+          <div class="candidate-meta">
+            <span class={`chip ${openClawRunTone(lane.run)}`}>{openClawRunLabel(lane.run)}</span>
+            {lane.run.queueId ? <span class="chip">{lane.run.queueId}</span> : null}
+            {prUrl ? <span class="chip ok">PR linked</span> : null}
+          </div>
+          <p>{openClawRunNextAction(lane.run)}</p>
+          <div class="worker-lane-actions">
+            <button onClick={() => copyText(openClawRunResumePrompt(lane.run))}>
+              <Icon name="message-square-text" />
+              Resume
+            </button>
+            <button onClick={() => copyText(openClawRunHandoff(lane.run))}>
+              <Icon name="send" />
+              Handoff
+            </button>
+          </div>
+        </div>
+      ) : lane.candidate ? (
+        <div class="worker-lane-body">
+          <a href={lane.candidate.url} target="_blank" rel="noreferrer">
+            #{lane.candidate.number} {lane.candidate.title}
+          </a>
+          <div class="candidate-meta">
+            <span class="chip ok">eligible</span>
+            <span class="chip">{lane.candidate.queueId}</span>
+            {lane.candidate.signals.sourceRepro ? <span class="chip">source repro</span> : null}
+            {lane.candidate.signals.currentMainRepro ? (
+              <span class="chip">current main</span>
+            ) : null}
+          </div>
+          <p>{openClawCandidateWhy(lane.candidate)}</p>
+          <div class="worker-lane-actions">
+            <button onClick={() => onCopyPrompt(lane.candidate)}>
+              <Icon name="copy" />
+              Prompt
+            </button>
+            <button
+              title={openClawTrackDisabledReason(lane.candidate, runner)}
+              disabled={
+                runner?.status !== "connected" ||
+                !lane.candidate.signals.readyForPickup ||
+                runner?.trackingIssue === lane.candidate.number
+              }
+              onClick={() => onTrack(lane.candidate)}
+            >
+              <Icon name="list-checks" />
+              {runner?.trackingIssue === lane.candidate.number ? "Tracking..." : "Track"}
+            </button>
+            <button
+              title={openClawStartDisabledReason(lane.candidate, canStartWork, runner)}
+              disabled={
+                runner?.status !== "connected" ||
+                !canStartWork ||
+                !lane.candidate.signals.readyForPickup ||
+                runner?.startingIssue === lane.candidate.number
+              }
+              onClick={() => onStartCodex(lane.candidate)}
+            >
+              <Icon name="square-terminal" />
+              {runner?.startingIssue === lane.candidate.number ? "Starting..." : "Start"}
+            </button>
+            <button
+              class="primary"
+              disabled={
+                !canCreate ||
+                !lane.candidate.signals.readyForPickup ||
+                busyIssue === lane.candidate.number
+              }
+              onClick={() => onCreate(lane.candidate)}
+            >
+              {busyIssue === lane.candidate.number ? "Creating..." : "Card"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div class="worker-lane-empty">
+          <Icon name="target" />
+          <p>No eligible queue item for this lane yet.</p>
+        </div>
+      )}
+    </article>
   );
 }
 
@@ -2453,9 +2675,11 @@ function openClawPromptLooksComplete(prompt) {
 function loadOpenClawRunnerSettings() {
   try {
     const savedUrl = localStorage.getItem(openClawRunnerUrlStorageKey);
+    const savedToken = localStorage.getItem(openClawRunnerTokenStorageKey) || "";
     return {
       url: savedUrl ? String(savedUrl) : defaultOpenClawRunnerUrl,
-      token: localStorage.getItem(openClawRunnerTokenStorageKey) || "",
+      token: savedToken,
+      saved: Boolean(savedUrl || savedToken),
       status: "unknown",
       error: "",
       info: null,
@@ -2470,6 +2694,7 @@ function loadOpenClawRunnerSettings() {
     return {
       url: defaultOpenClawRunnerUrl,
       token: "",
+      saved: false,
       status: "unknown",
       error: "",
       info: null,
@@ -2636,6 +2861,127 @@ function openClawRunNote(run) {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function openClawWorkerRunway(queues, runner, preferences) {
+  const preferredCapacity = Math.max(
+    1,
+    Math.min(8, Number(preferences?.maxParallelWorkers || runner?.info?.maxActive || 1) || 1),
+  );
+  const runs = Array.isArray(runner?.runs) ? runner.runs : [];
+  const plates = runs
+    .filter((run) => run && !run.archivedAt && !openClawRunInactive(run))
+    .sort((left, right) => openClawRunAttentionScore(left) - openClawRunAttentionScore(right));
+  const capacity = Math.max(preferredCapacity, Math.min(8, plates.length), 1);
+  const candidates = openClawRunwayCandidates(queues, runner, capacity);
+  const lanes = [];
+  let candidateIndex = 0;
+  for (let index = 0; index < capacity; index += 1) {
+    const run = plates[index];
+    const candidate = run ? null : candidates[candidateIndex++] || null;
+    lanes.push({
+      id:
+        run?.id ||
+        (candidate ? openClawIssueKey(candidate.number, candidate.url) : `empty-${index}`),
+      index: index + 1,
+      kind: run ? "filled" : candidate ? "suggested" : "empty",
+      run,
+      candidate,
+      title: run ? "Plate in flight" : candidate ? "Next best issue" : "Open lane",
+      subtitle: run
+        ? openClawMissionLabel(run)
+        : candidate
+          ? candidate.queueId || "OpenClaw queue"
+          : "Waiting for an eligible candidate",
+    });
+  }
+  const filled = plates.length;
+  const empty = Math.max(0, capacity - filled);
+  return {
+    capacity,
+    preferredCapacity,
+    filled,
+    empty,
+    lanes,
+    summary: openClawRunwaySummary(filled, empty, preferredCapacity, capacity),
+  };
+}
+
+function openClawRunwayCandidates(queues, runner, limit) {
+  const seen = new Set();
+  const results = [];
+  for (const queue of Array.isArray(queues) ? queues : []) {
+    for (const candidate of Array.isArray(queue?.candidates) ? queue.candidates : []) {
+      const withQueue = { ...candidate, queueId: candidate.queueId || queue.definition?.id || "" };
+      const key = openClawIssueKey(withQueue.number, withQueue.url);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      if (openClawRunnerHasIssueRun(runner, withQueue.number, withQueue.url)) continue;
+      if (!withQueue.signals?.readyForPickup) continue;
+      results.push(withQueue);
+      if (results.length >= limit) return results;
+    }
+  }
+  return results;
+}
+
+function openClawRunwaySummary(filled, empty, preferredCapacity, capacity) {
+  if (filled > preferredCapacity) {
+    return `${filled} plates are on deck, above the ${preferredCapacity}-worker preference. Finish, park, or hand off before adding more.`;
+  }
+  if (filled === 0 && empty > 0) {
+    return `${empty} worker ${empty === 1 ? "lane is" : "lanes are"} open. Suggested issues are ordered by the OpenClaw queue rules.`;
+  }
+  if (empty > 0) {
+    return `${filled} ${filled === 1 ? "plate is" : "plates are"} in flight and ${empty} ${empty === 1 ? "lane is" : "lanes are"} ready for the next issue.`;
+  }
+  return `All ${capacity} worker ${capacity === 1 ? "lane is" : "lanes are"} occupied. Focus on proof, PR readiness, CI, and ClawSweeper.`;
+}
+
+function openClawCandidateWhy(candidate) {
+  const bits = [];
+  if (candidate?.queueId?.includes("p0")) bits.push("P0 first");
+  else if (candidate?.queueId?.includes("p1")) bits.push("P1 next");
+  else if (candidate?.queueId?.includes("p2")) bits.push("P2 queue");
+  if (candidate?.signals?.sourceRepro) bits.push("source repro");
+  if (candidate?.signals?.fixShapeClear) bits.push("clear fix shape");
+  if (candidate?.signals?.currentMainRepro) bits.push("current-main proof");
+  if (candidate?.signals?.needsLiveValidation) bits.push("needs live proof");
+  return bits.length
+    ? bits.join(", ")
+    : "ClawSweeper marked this issue queueable, open, and without a linked fix PR.";
+}
+
+function openClawWorkerRunwayBrief(runway, runner) {
+  return [
+    "OpenClaw worker lane plan",
+    `Runner: ${runner?.status || "unknown"}${runner?.info?.dryRun ? " (dry-run)" : ""}`,
+    `Lanes: ${runway.filled}/${runway.capacity} filled; ${runway.empty} open`,
+    runway.summary,
+    "",
+    ...runway.lanes.map((lane) => {
+      if (lane.run) {
+        return [
+          `Lane ${lane.index}: #${lane.run.issueNumber || "?"} [${openClawRunLabel(lane.run)}] ${lane.run.title || "OpenClaw issue"}`,
+          lane.run.issueUrl ? `Issue: ${lane.run.issueUrl}` : "",
+          `Next: ${openClawRunNextAction(lane.run)}`,
+        ]
+          .filter(Boolean)
+          .join("\n");
+      }
+      if (lane.candidate) {
+        return [
+          `Lane ${lane.index}: suggested #${lane.candidate.number} ${lane.candidate.title}`,
+          `Issue: ${lane.candidate.url}`,
+          `Queue: ${lane.candidate.queueId}`,
+          `Why: ${openClawCandidateWhy(lane.candidate)}`,
+        ].join("\n");
+      }
+      return `Lane ${lane.index}: open, no eligible queue item loaded`;
+    }),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function openClawMissionControl(runs, runner) {

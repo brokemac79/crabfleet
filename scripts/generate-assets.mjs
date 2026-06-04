@@ -151,6 +151,7 @@ function buildLucideIconScript(iconNodes) {
     "shield-check",
     "square-terminal",
     "sun",
+    "target",
     "terminal",
     "x",
   ];

@@ -2059,6 +2059,141 @@
         justify-content: center;
         gap: 7px;
       }
+      .openclaw-worker-runway {
+        display: grid;
+        gap: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--dashboard-surface);
+        padding: 14px;
+      }
+      .openclaw-worker-runway h2 {
+        margin: 5px 0 0;
+        color: var(--ink);
+        font-size: 18px;
+        font-weight: 720;
+      }
+      .openclaw-worker-runway header p {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .runway-head-actions {
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .runway-head-actions button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        white-space: nowrap;
+      }
+      .worker-lanes {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+        gap: 10px;
+      }
+      .worker-lane {
+        min-width: 0;
+        display: grid;
+        gap: 10px;
+        align-content: start;
+        min-height: 210px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 12px;
+      }
+      .worker-lane.suggested {
+        border-color: rgb(16 185 129 / 0.24);
+        background: linear-gradient(180deg, rgb(16 185 129 / 0.08), transparent 54%), var(--panel);
+      }
+      .worker-lane.filled {
+        border-color: rgb(245 158 11 / 0.28);
+        background: linear-gradient(180deg, rgb(245 158 11 / 0.08), transparent 54%), var(--panel);
+      }
+      .worker-lane.empty {
+        border-style: dashed;
+      }
+      .worker-lane-head {
+        display: grid;
+        grid-template-columns: 30px minmax(0, 1fr);
+        gap: 9px;
+        align-items: center;
+      }
+      .lane-number {
+        width: 30px;
+        height: 30px;
+        display: inline-grid;
+        place-items: center;
+        border: 1px solid var(--line-strong);
+        border-radius: 999px;
+        color: var(--ink);
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .worker-lane-head strong,
+      .worker-lane-body a {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--ink);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .worker-lane-head strong {
+        display: block;
+        font-size: 13px;
+      }
+      .worker-lane-head span:last-child,
+      .worker-lane-body p,
+      .worker-lane-empty p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .worker-lane-body {
+        min-width: 0;
+        display: grid;
+        gap: 8px;
+      }
+      .worker-lane-body a {
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .worker-lane-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+      }
+      .worker-lane-actions button {
+        min-height: 32px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 0 9px;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .worker-lane-empty {
+        display: grid;
+        place-items: center;
+        align-content: center;
+        gap: 10px;
+        min-height: 126px;
+        color: var(--muted);
+        text-align: center;
+      }
+      .worker-lane-empty svg {
+        width: 28px;
+        height: 28px;
+      }
       .openclaw-active-work {
         display: grid;
         gap: 10px;
@@ -2616,6 +2751,25 @@
           display: grid;
           grid-template-columns: 1fr;
           align-items: start;
+        }
+        .openclaw-worker-runway .workflow-section-head {
+          display: grid;
+          grid-template-columns: 1fr;
+          align-items: start;
+        }
+        .runway-head-actions {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+          justify-content: stretch;
+          width: 100%;
+        }
+        .runway-head-actions .chip,
+        .runway-head-actions button {
+          width: 100%;
+        }
+        .worker-lanes,
+        .worker-lane-actions {
+          grid-template-columns: 1fr;
         }
         .active-work-mission,
         .mission-actions {
