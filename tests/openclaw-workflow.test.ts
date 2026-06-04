@@ -71,6 +71,19 @@ test("issue signals block linked PRs, no-new-fix labels, and too-new issues", ()
   assert.equal(tooNew.ageGate, "too-new");
 });
 
+test("issue age gate can be lowered for fork testing", () => {
+  const labels = ["clawsweeper:queueable-fix"];
+  const createdTwoHoursAgo = "2026-06-03T10:00:00Z";
+
+  const defaultGate = openClawIssueSignals(labels, createdTwoHoursAgo, now);
+  const testGate = openClawIssueSignals(labels, createdTwoHoursAgo, now, 0);
+
+  assert.equal(defaultGate.readyForPickup, false);
+  assert.equal(defaultGate.ageGate, "too-new");
+  assert.equal(testGate.readyForPickup, true);
+  assert.equal(testGate.ageGate, "eligible");
+});
+
 test("governor pauses new work at personal PR and usage limits", () => {
   const preferences = basePreferences({
     activeOpenPrLimit: 10,
@@ -166,6 +179,7 @@ test("preferences normalize repo, limits, role, and login", () => {
       githubLogin: " brokemac79 ",
       activeOpenPrLimit: 99,
       maxParallelWorkers: 0,
+      minimumIssueAgeHours: Number.NaN,
       weeklyRemainingBaseline: 97,
     },
     basePreferences(),
@@ -175,7 +189,11 @@ test("preferences normalize repo, limits, role, and login", () => {
   assert.equal(normalized.githubLogin, "brokemac79");
   assert.equal(normalized.activeOpenPrLimit, 20);
   assert.equal(normalized.maxParallelWorkers, 1);
+  assert.equal(normalized.minimumIssueAgeHours, 6);
   assert.equal(normalized.weeklyRemainingBaseline, 97);
+
+  const testMode = normalizeOpenClawPreferences({ minimumIssueAgeHours: 0 }, basePreferences());
+  assert.equal(testMode.minimumIssueAgeHours, 0);
 });
 
 function basePreferences(
@@ -190,6 +208,7 @@ function basePreferences(
     hardOpenPrCap: 20,
     dailyUsageDropLimit: 5,
     maxParallelWorkers: 2,
+    minimumIssueAgeHours: 6,
     weeklyRemainingBaseline: null,
     weeklyRemainingCurrent: null,
     usageWindowStartedAt: now,

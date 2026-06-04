@@ -9,6 +9,7 @@ export type OpenClawWorkflowPreferences = {
   hardOpenPrCap: number;
   dailyUsageDropLimit: number;
   maxParallelWorkers: number;
+  minimumIssueAgeHours: number;
   weeklyRemainingBaseline: number | null;
   weeklyRemainingCurrent: number | null;
   usageWindowStartedAt: number | null;
@@ -89,7 +90,7 @@ export type OpenClawHandoffInput = {
 };
 
 export const openClawDefaultRepo = "openclaw/openclaw";
-const openClawMinimumIssueAgeMs = 6 * 60 * 60 * 1000;
+export const openClawDefaultMinimumIssueAgeHours = 6;
 const openClawMaximumIssueAgeMs = 30 * 24 * 60 * 60 * 1000;
 
 export const openClawDefaultPreferences: Omit<
@@ -103,6 +104,7 @@ export const openClawDefaultPreferences: Omit<
   hardOpenPrCap: 20,
   dailyUsageDropLimit: 5,
   maxParallelWorkers: 2,
+  minimumIssueAgeHours: openClawDefaultMinimumIssueAgeHours,
   weeklyRemainingBaseline: null,
   weeklyRemainingCurrent: null,
   usageWindowStartedAt: null,
@@ -192,6 +194,12 @@ export function normalizeOpenClawPreferences(
       fallback.dailyUsageDropLimit,
     ),
     maxParallelWorkers: integerInRange(value.maxParallelWorkers, 1, 8, fallback.maxParallelWorkers),
+    minimumIssueAgeHours: integerInRange(
+      value.minimumIssueAgeHours,
+      0,
+      168,
+      fallback.minimumIssueAgeHours,
+    ),
     weeklyRemainingBaseline: nullablePercent(value.weeklyRemainingBaseline),
     weeklyRemainingCurrent: nullablePercent(value.weeklyRemainingCurrent),
     usageWindowStartedAt: nullablePositiveInteger(value.usageWindowStartedAt),
@@ -230,12 +238,13 @@ export function openClawIssueSignals(
   labels: string[],
   createdAt: string | null | undefined,
   now = Date.now(),
+  minimumIssueAgeHours = openClawDefaultMinimumIssueAgeHours,
 ): OpenClawIssueSignals {
   const lower = labels.map((label) => label.toLowerCase());
   const has = (label: string) => lower.includes(label.toLowerCase());
   const hasPrefix = (prefix: string) => lower.some((label) => label.startsWith(prefix));
   const blockers = sharedBlockedLabels.filter(has);
-  const ageGate = issueAgeGate(createdAt, now);
+  const ageGate = issueAgeGate(createdAt, now, minimumIssueAgeHours);
   const queueable = has("clawsweeper:queueable-fix");
   const linkedPr = has("clawsweeper:linked-pr-open");
   const noNewFixPr = has("clawsweeper:no-new-fix-pr");
@@ -382,12 +391,14 @@ export function buildOpenClawDiscordHandoff(input: OpenClawHandoffInput): string
 function issueAgeGate(
   createdAt: string | null | undefined,
   now: number,
+  minimumIssueAgeHours: number,
 ): OpenClawIssueSignals["ageGate"] {
   if (!createdAt) return "unknown";
   const created = Date.parse(createdAt);
   if (!Number.isFinite(created)) return "unknown";
   const ageMs = now - created;
-  if (ageMs < openClawMinimumIssueAgeMs) return "too-new";
+  const minimumIssueAgeMs = Math.max(0, minimumIssueAgeHours) * 60 * 60 * 1000;
+  if (ageMs < minimumIssueAgeMs) return "too-new";
   if (ageMs > openClawMaximumIssueAgeMs) return "too-old";
   return "eligible";
 }

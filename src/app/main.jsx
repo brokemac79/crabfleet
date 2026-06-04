@@ -1541,7 +1541,12 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     setDraft(openClawPreferenceDraft(preferences));
-  }, [preferences?.updatedAt, preferences?.targetRepo, preferences?.githubLogin]);
+  }, [
+    preferences?.updatedAt,
+    preferences?.targetRepo,
+    preferences?.githubLogin,
+    preferences?.minimumIssueAgeHours,
+  ]);
   if (!preferences) return <div class="openclaw-settings skeleton">Loading settings...</div>;
   async function submit(event) {
     event.preventDefault();
@@ -1560,6 +1565,7 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
         activeOpenPrLimit: Number(draft.activeOpenPrLimit),
         dailyUsageDropLimit: Number(draft.dailyUsageDropLimit),
         maxParallelWorkers: Number(draft.maxParallelWorkers),
+        minimumIssueAgeHours: Number(draft.minimumIssueAgeHours),
         weeklyRemainingBaseline,
         weeklyRemainingCurrent,
         usageWindowStartedAt:
@@ -1651,6 +1657,21 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
           max="8"
           value={draft.maxParallelWorkers}
           onInput={(event) => setDraft({ ...draft, maxParallelWorkers: event.currentTarget.value })}
+        />
+      </label>
+      <label>
+        <LabelText
+          text="Min issue age"
+          help="Hours an issue must exist before Start Codex is enabled. Use 0 for fork or dummy testing."
+        />
+        <input
+          type="number"
+          min="0"
+          max="168"
+          value={draft.minimumIssueAgeHours}
+          onInput={(event) =>
+            setDraft({ ...draft, minimumIssueAgeHours: event.currentTarget.value })
+          }
         />
       </label>
       <label>
@@ -1793,6 +1814,7 @@ function OpenClawQueue({
                   Copy prompt
                 </button>
                 <button
+                  title={openClawStartDisabledReason(candidate, canStartWork, runner)}
                   disabled={
                     runner?.status !== "connected" ||
                     !canStartWork ||
@@ -1933,6 +1955,7 @@ function openClawPreferenceDraft(preferences) {
     activeOpenPrLimit: String(preferences?.activeOpenPrLimit ?? 10),
     dailyUsageDropLimit: String(preferences?.dailyUsageDropLimit ?? 5),
     maxParallelWorkers: String(preferences?.maxParallelWorkers ?? 2),
+    minimumIssueAgeHours: String(preferences?.minimumIssueAgeHours ?? 6),
     weeklyRemainingBaseline:
       preferences?.weeklyRemainingBaseline === null ||
       preferences?.weeklyRemainingBaseline === undefined
@@ -1944,6 +1967,19 @@ function openClawPreferenceDraft(preferences) {
         ? ""
         : String(preferences.weeklyRemainingCurrent),
   };
+}
+
+function openClawStartDisabledReason(candidate, canStartWork, runner) {
+  if (runner?.status !== "connected") return "Connect the local Codex bridge first.";
+  if (!canStartWork) return "New work is paused by your Open PR or usage limits.";
+  if (candidate?.signals?.ageGate === "too-new") {
+    return "Waiting for the configured minimum issue age. Set Min issue age to 0 for fork or dummy testing.";
+  }
+  if (!candidate?.signals?.readyForPickup) {
+    return "This issue is not ready for pickup under the current ClawSweeper labels.";
+  }
+  if (runner?.startingIssue === candidate?.number) return "Starting local Codex work.";
+  return "Start local Codex with this issue prompt.";
 }
 
 function openClawCandidatePrompt(candidate) {

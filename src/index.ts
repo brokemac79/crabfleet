@@ -659,6 +659,7 @@ type OpenClawWorkflowPreferenceTable = {
   hard_open_pr_cap: number;
   daily_usage_drop_limit: number;
   max_parallel_workers: number;
+  minimum_issue_age_hours: number;
   weekly_remaining_baseline: number | null;
   weekly_remaining_current: number | null;
   usage_window_started_at: number | null;
@@ -2395,7 +2396,11 @@ async function readOpenClawWorkflow(
   const token = await openClawWorkflowGitHubToken(request, env, repo);
   const queues = queuesForOpenClawRole(effectivePreferences.roleMode);
   const [queueResults, pullRequests] = await Promise.all([
-    Promise.all(queues.map((queue) => fetchOpenClawQueue(env, token, repo, queue))),
+    Promise.all(
+      queues.map((queue) =>
+        fetchOpenClawQueue(env, token, repo, queue, effectivePreferences.minimumIssueAgeHours),
+      ),
+    ),
     githubLogin
       ? fetchOpenClawPullRequests(env, token, repo, githubLogin)
       : Promise.resolve({ items: [], error: "GitHub login is not configured" }),
@@ -2501,6 +2506,7 @@ async function readOpenClawWorkflowPreferences(
       hardOpenPrCap: row.hard_open_pr_cap,
       dailyUsageDropLimit: row.daily_usage_drop_limit,
       maxParallelWorkers: row.max_parallel_workers,
+      minimumIssueAgeHours: row.minimum_issue_age_hours,
       weeklyRemainingBaseline: row.weekly_remaining_baseline,
       weeklyRemainingCurrent: row.weekly_remaining_current,
       usageWindowStartedAt: row.usage_window_started_at,
@@ -2525,6 +2531,7 @@ async function writeOpenClawWorkflowPreferences(
       hard_open_pr_cap: preferences.hardOpenPrCap,
       daily_usage_drop_limit: preferences.dailyUsageDropLimit,
       max_parallel_workers: preferences.maxParallelWorkers,
+      minimum_issue_age_hours: preferences.minimumIssueAgeHours,
       weekly_remaining_baseline: preferences.weeklyRemainingBaseline,
       weekly_remaining_current: preferences.weeklyRemainingCurrent,
       usage_window_started_at: preferences.usageWindowStartedAt,
@@ -2539,6 +2546,7 @@ async function writeOpenClawWorkflowPreferences(
         hard_open_pr_cap: preferences.hardOpenPrCap,
         daily_usage_drop_limit: preferences.dailyUsageDropLimit,
         max_parallel_workers: preferences.maxParallelWorkers,
+        minimum_issue_age_hours: preferences.minimumIssueAgeHours,
         weekly_remaining_baseline: preferences.weeklyRemainingBaseline,
         weekly_remaining_current: preferences.weeklyRemainingCurrent,
         usage_window_started_at: preferences.usageWindowStartedAt,
@@ -2553,6 +2561,7 @@ async function fetchOpenClawQueue(
   token: string | undefined,
   repo: string,
   definition: OpenClawQueueDefinition,
+  minimumIssueAgeHours: number,
 ): Promise<OpenClawQueueResult> {
   const now = Date.now();
   const query = buildOpenClawIssueSearchQuery(repo, definition, now);
@@ -2572,7 +2581,9 @@ async function fetchOpenClawQueue(
       totalCount = Math.max(totalCount, payload.total_count ?? 0);
       const pageCandidates = (payload.items ?? [])
         .filter((item) => !item.pull_request)
-        .map((item) => openClawCandidateFromSearchItem(item, definition.id))
+        .map((item) =>
+          openClawCandidateFromSearchItem(item, definition.id, now, minimumIssueAgeHours),
+        )
         .filter((candidate) => candidate.signals.ageGate !== "too-old");
       candidates.push(...pageCandidates);
       if ((payload.items ?? []).length < 30) break;
@@ -2755,6 +2766,8 @@ function unknownCheckSummary(signals: ReturnType<typeof openClawPrSignals>): Ope
 function openClawCandidateFromSearchItem(
   item: GitHubSearchIssueItem,
   queueId: string,
+  now: number,
+  minimumIssueAgeHours: number,
 ): OpenClawCandidate {
   const labels = item.labels.map((label) => label.name).filter(Boolean);
   const candidate = {
@@ -2766,7 +2779,7 @@ function openClawCandidateFromSearchItem(
     updatedAt: item.updated_at,
     labels,
     queueId,
-    signals: openClawIssueSignals(labels, item.created_at),
+    signals: openClawIssueSignals(labels, item.created_at, now, minimumIssueAgeHours),
   };
   return { ...candidate, workPrompt: buildOpenClawIssuePrompt(candidate) };
 }
