@@ -50,6 +50,7 @@ import {
   openClawDefaultPreferences,
   openClawDefaultRepo,
   openClawIssueSignals,
+  openClawMaximumIssueAgeMs,
   openClawPrSignals,
   queuesForOpenClawRole,
   type OpenClawCandidate,
@@ -189,7 +190,7 @@ type GitHubSearchIssueItem = {
   state: string;
   html_url: string;
   user: { login: string } | null;
-  labels: GitHubLabelPayload[];
+  labels: Array<GitHubLabelPayload | string>;
   created_at: string;
   updated_at: string;
   pull_request?: { url?: string; html_url?: string };
@@ -206,6 +207,7 @@ type GitHubPullRequestPayload = {
   html_url: string;
   state: string;
   user: { login: string } | null;
+  labels?: Array<GitHubLabelPayload | string>;
   head: { sha: string; ref: string; repo: { full_name: string } | null };
   base: { ref: string };
   draft?: boolean;
@@ -2602,14 +2604,90 @@ async function fetchOpenClawQueue(
       error: null,
     };
   } catch (error) {
-    return {
-      definition,
-      query,
-      totalCount: 0,
-      candidates: [],
-      error: error instanceof Error ? error.message : String(error),
-    };
+    const searchError = errorMessage(error);
+    try {
+      const fallback = await fetchOpenClawQueueFromRest(
+        repo,
+        token,
+        definition,
+        minimumIssueAgeHours,
+        now,
+      );
+      return {
+        ...fallback,
+        error: `GitHub Search failed: ${searchError}; showing REST label fallback.`,
+      };
+    } catch (fallbackError) {
+      const restError = errorMessage(fallbackError);
+      const message =
+        restError === searchError
+          ? searchError
+          : `GitHub Search failed: ${searchError}; REST fallback failed: ${restError}`;
+      return {
+        definition,
+        query,
+        totalCount: 0,
+        candidates: [],
+        error: message,
+      };
+    }
   }
+}
+
+async function fetchOpenClawQueueFromRest(
+  repo: string,
+  token: string | undefined,
+  definition: OpenClawQueueDefinition,
+  minimumIssueAgeHours: number,
+  now: number,
+): Promise<OpenClawQueueResult> {
+  const candidates: OpenClawCandidate[] = [];
+  let totalCount = 0;
+  for (let page = 1; page <= 3 && candidates.length < 6; page += 1) {
+    const payload = await githubApi<GitHubSearchIssueItem[]>(
+      token,
+      openClawIssueListPath(repo, definition, page, now),
+    );
+    totalCount += payload.length;
+    const pageCandidates = payload
+      .filter((item) => !item.pull_request)
+      .map((item) =>
+        openClawCandidateFromSearchItem(item, definition.id, now, minimumIssueAgeHours),
+      )
+      .filter((candidate) => openClawCandidateMatchesQueue(candidate, definition))
+      .filter((candidate) => candidate.signals.ageGate === "eligible");
+    candidates.push(...pageCandidates);
+    if (payload.length < 100) break;
+  }
+  return {
+    definition,
+    query: buildOpenClawIssueSearchQuery(repo, definition, now),
+    totalCount: Math.max(totalCount, candidates.length),
+    candidates: candidates.slice(0, 6),
+    error: null,
+  };
+}
+
+function openClawIssueListPath(
+  repo: string,
+  definition: OpenClawQueueDefinition,
+  page: number,
+  now: number,
+): string {
+  const params = new URLSearchParams({
+    state: "open",
+    labels: definition.labels.join(","),
+    sort: definition.sort,
+    direction: definition.order,
+    per_page: "100",
+    page: String(page),
+    since: new Date(now - openClawMaximumIssueAgeMs).toISOString(),
+  });
+  return `/repos/${repo}/issues?${params.toString()}`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function hydrateOpenClawPartialQueueResults(results: OpenClawQueueResult[]): OpenClawQueueResult[] {
@@ -2676,7 +2754,106 @@ async function fetchOpenClawPullRequests(
     );
     return { items, error: null };
   } catch (error) {
-    return { items: [], error: error instanceof Error ? error.message : String(error) };
+    const searchError = errorMessage(error);
+    try {
+      const fallback = await fetchOpenClawPullRequestsFromRest(env, token, repo, login);
+      return {
+        items: fallback.items,
+        error: fallback.error ? `GitHub Search failed: ${searchError}; ${fallback.error}` : null,
+      };
+    } catch (fallbackError) {
+      return {
+        items: [],
+        error: `GitHub Search failed: ${searchError}; REST fallback failed: ${errorMessage(
+          fallbackError,
+        )}`,
+      };
+    }
+  }
+}
+
+async function fetchOpenClawPullRequestsFromRest(
+  env: RuntimeEnv,
+  token: string | undefined,
+  repo: string,
+  login: string,
+): Promise<{ items: OpenClawPullRequestSummary[]; error: string | null }> {
+  const normalizedLogin = login.toLowerCase();
+  const authored: GitHubPullRequestPayload[] = [];
+  let complete = false;
+  const maxPages = 5;
+  for (let page = 1; page <= maxPages; page += 1) {
+    const pulls = await githubApi<GitHubPullRequestPayload[]>(
+      token,
+      openClawPullRequestListPath(repo, page),
+    );
+    authored.push(
+      ...pulls.filter((pull) => (pull.user?.login ?? "").toLowerCase() === normalizedLogin),
+    );
+    if (pulls.length < 100) {
+      complete = true;
+      break;
+    }
+  }
+  const items = await Promise.all(
+    authored.slice(0, 20).map((pull) => fetchOpenClawPullRequestFromPull(env, token, repo, pull)),
+  );
+  return {
+    items,
+    error: complete
+      ? null
+      : `REST fallback is partial after ${maxPages * 100} open PRs; retry when GitHub Search is available.`,
+  };
+}
+
+function openClawPullRequestListPath(repo: string, page: number): string {
+  const params = new URLSearchParams({
+    state: "open",
+    sort: "updated",
+    direction: "desc",
+    per_page: "100",
+    page: String(page),
+  });
+  return `/repos/${repo}/pulls?${params.toString()}`;
+}
+
+async function fetchOpenClawPullRequestFromPull(
+  env: RuntimeEnv,
+  token: string | undefined,
+  repo: string,
+  pull: GitHubPullRequestPayload,
+): Promise<OpenClawPullRequestSummary> {
+  const labels = await fetchOpenClawIssueLabels(token, repo, pull.number, pull.labels);
+  const signals = openClawPrSignals(labels);
+  const checks = pull.head.sha
+    ? await fetchOpenClawCheckSummary(env, token, repo, pull.head.sha, signals)
+    : unknownCheckSummary(signals);
+  return {
+    number: pull.number,
+    title: pull.title,
+    url: pull.html_url,
+    author: pull.user?.login ?? null,
+    labels,
+    branch: pull.head.ref || null,
+    headSha: pull.head.sha || null,
+    draft: Boolean(pull.draft),
+    updatedAt: pull.updated_at,
+    signals,
+    checks,
+  };
+}
+
+async function fetchOpenClawIssueLabels(
+  token: string | undefined,
+  repo: string,
+  number: number,
+  fallback: Array<GitHubLabelPayload | string> | undefined,
+): Promise<string[]> {
+  try {
+    const issue = await githubApi<GitHubSearchIssueItem>(token, `/repos/${repo}/issues/${number}`);
+    return gitHubLabelNames(issue.labels);
+  } catch {
+    return gitHubLabelNames(fallback);
   }
 }
 
@@ -2686,7 +2863,7 @@ async function fetchOpenClawPullRequest(
   repo: string,
   item: GitHubSearchIssueItem,
 ): Promise<OpenClawPullRequestSummary> {
-  const labels = item.labels.map((label) => label.name).filter(Boolean);
+  const labels = gitHubLabelNames(item.labels);
   const signals = openClawPrSignals(labels);
   try {
     const pull = await githubApi<GitHubPullRequestPayload>(
@@ -2816,7 +2993,7 @@ function openClawCandidateFromSearchItem(
   now: number,
   minimumIssueAgeHours: number,
 ): OpenClawCandidate {
-  const labels = item.labels.map((label) => label.name).filter(Boolean);
+  const labels = gitHubLabelNames(item.labels);
   const candidate = {
     number: item.number,
     title: item.title,
@@ -2829,6 +3006,12 @@ function openClawCandidateFromSearchItem(
     signals: openClawIssueSignals(labels, item.created_at, now, minimumIssueAgeHours),
   };
   return { ...candidate, workPrompt: buildOpenClawIssuePrompt(candidate) };
+}
+
+function gitHubLabelNames(labels: Array<GitHubLabelPayload | string> | undefined): string[] {
+  return (labels ?? [])
+    .map((label) => (typeof label === "string" ? label : label.name))
+    .filter(Boolean);
 }
 
 async function githubSearchIssues<T>(

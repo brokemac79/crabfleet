@@ -104,6 +104,24 @@ Trial maintainer ordering is:
 
 If the same issue appears in multiple queue views, Claw Queue keeps the best priority identity for Worker Runway and Command Center.
 
+## Data Sources And Rate Limits
+
+The wider OpenClaw ecosystem generally follows an archive-first pattern for broad discovery:
+
+- use Gitcrawl or refreshed Gitcrawl-store data for issue/PR discovery, clustering, and report generation,
+- keep that archive fresh outside the interactive request path,
+- use live GitHub only for final truth before comments, labels, PR creation, review, merge, or other mutations,
+- fall back to live GitHub search only when the archive is missing, stale, or cannot express the query.
+
+Claw Queue now follows the same direction in the parts it can control from a Worker:
+
+- issue queues try GitHub Search first, then fall back to normal repo issue listing plus label, blocker, and age filtering when Search is rate-limited,
+- authored PR monitoring tries GitHub Search first, then falls back to repo PR listing and issue-label reads,
+- PR limits stay fail-closed when the fallback cannot prove it scanned the complete open PR list,
+- queue fallback results are shown with a warning so users know the page is in a degraded data-source mode.
+
+The intended production version should add a Gitcrawl-backed snapshot source rather than asking every browser load to hit GitHub Search. A central OpenClaw service or scheduled sync can read Gitcrawl-store, write queue and open-PR snapshots into Crabfleet storage, and let the Worker use those snapshots for broad discovery. Live GitHub checks should still run before starting work, claiming, opening/updating PRs, or generating final maintainer handoffs.
+
 ## Worker Runway
 
 Worker Runway maps your configured worker count to lanes:
@@ -240,7 +258,7 @@ These endpoints are same-origin app endpoints and require the normal Crabfleet s
 
 ### GitHub rate limit reached
 
-Wait and refresh. If PR lookup fails, Claw Queue pauses new work because it cannot prove you are under the open PR limit.
+Refresh after a short wait. Claw Queue will try lower-pressure REST fallbacks when GitHub Search is limited. If PR lookup still fails or the fallback is only partial, Claw Queue pauses new work because it cannot prove you are under the open PR limit.
 
 ### Start is disabled
 

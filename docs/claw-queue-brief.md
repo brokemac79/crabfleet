@@ -35,6 +35,8 @@ It can:
 
 The important shift is that the page is not only an issue picker. It tries to carry the work through the whole contribution loop.
 
+For data discovery, Claw Queue is moving toward the same pattern used elsewhere in the OpenClaw ecosystem: archive/cache first for broad issue and PR discovery, live GitHub only for final verification and mutations. The current app has GitHub Search caching and REST fallbacks for rate-limit cases; the next production-grade step is a Gitcrawl-backed snapshot source.
+
 ## How The Workflow Feels
 
 The user starts in Command Center. If new work is allowed, it shows the next safest issue to pick. If work is already active, it helps resume or close out that plate instead. If limits, GitHub errors, usage budget, or worker capacity block new work, it says so directly.

@@ -2548,7 +2548,11 @@ function OpenClawQueue({
         <span class="chip">{queue.totalCount}</span>
       </header>
       <code class="query-line">{queue.query}</code>
-      {queue.error ? <div class="workflow-banner error">{queue.error}</div> : null}
+      {queue.error ? (
+        <div class={`workflow-banner ${queue.candidates.length ? "" : "error"}`}>
+          {queue.error}
+        </div>
+      ) : null}
       <div class="candidate-list">
         {queue.candidates.length ? (
           queue.candidates.map((candidate) => {

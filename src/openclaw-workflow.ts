@@ -102,7 +102,7 @@ export type OpenClawHandoffInput = {
 
 export const openClawDefaultRepo = "openclaw/openclaw";
 export const openClawDefaultMinimumIssueAgeHours = 6;
-const openClawMaximumIssueAgeMs = 30 * 24 * 60 * 60 * 1000;
+export const openClawMaximumIssueAgeMs = 30 * 24 * 60 * 60 * 1000;
 
 export const openClawDefaultPreferences: Omit<
   OpenClawWorkflowPreferences,
