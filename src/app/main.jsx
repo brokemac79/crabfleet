@@ -1571,6 +1571,33 @@ function OpenClawPage(props) {
   const [busyIssue, setBusyIssue] = useState(null);
   const canCreate = canMaintain(props.user) && Boolean(governor?.canStartNewWork);
   const canStartWork = Boolean(governor?.canStartNewWork);
+  async function handleTrackCandidate(candidate) {
+    setActionError("");
+    try {
+      await props.trackOpenClawCandidateWork(candidate);
+    } catch (error) {
+      setActionError(error.message || "Could not track local Codex work");
+    }
+  }
+  async function handleStartCandidate(candidate) {
+    setActionError("");
+    try {
+      await props.startOpenClawCodexWork(candidate);
+    } catch (error) {
+      setActionError(error.message || "Could not start local Codex");
+    }
+  }
+  async function handleCreateCandidate(candidate) {
+    setActionError("");
+    setBusyIssue(candidate.number);
+    try {
+      await props.createOpenClawCandidateCard(candidate);
+    } catch (error) {
+      setActionError(error.message || "Could not create card");
+    } finally {
+      setBusyIssue(null);
+    }
+  }
   return (
     <section class="openclaw-page" aria-label="Claw Queue">
       <section class="openclaw-toolbar">
@@ -1606,6 +1633,22 @@ function OpenClawPage(props) {
       {governor?.reasons?.length ? (
         <div class="workflow-banner">{governor.reasons.join(" ")}</div>
       ) : null}
+      <OpenClawCommandCenter
+        workflow={workflow}
+        workflowError={props.openClawState.error}
+        queues={queues}
+        runner={props.openClawRunner}
+        preferences={preferences}
+        governor={governor}
+        canCreate={canCreate}
+        canStartWork={canStartWork}
+        busyIssue={busyIssue}
+        onRefresh={props.loadOpenClawWorkflow}
+        onCopyPrompt={props.copyOpenClawCandidatePrompt}
+        onTrack={handleTrackCandidate}
+        onStartCodex={handleStartCandidate}
+        onCreate={handleCreateCandidate}
+      />
       <OpenClawPreferencesPanel
         preferences={preferences}
         loading={props.openClawState.loading}
@@ -1625,33 +1668,9 @@ function OpenClawPage(props) {
         canStartWork={canStartWork}
         busyIssue={busyIssue}
         onCopyPrompt={props.copyOpenClawCandidatePrompt}
-        onTrack={async (candidate) => {
-          setActionError("");
-          try {
-            await props.trackOpenClawCandidateWork(candidate);
-          } catch (error) {
-            setActionError(error.message || "Could not track local Codex work");
-          }
-        }}
-        onStartCodex={async (candidate) => {
-          setActionError("");
-          try {
-            await props.startOpenClawCodexWork(candidate);
-          } catch (error) {
-            setActionError(error.message || "Could not start local Codex");
-          }
-        }}
-        onCreate={async (candidate) => {
-          setActionError("");
-          setBusyIssue(candidate.number);
-          try {
-            await props.createOpenClawCandidateCard(candidate);
-          } catch (error) {
-            setActionError(error.message || "Could not create card");
-          } finally {
-            setBusyIssue(null);
-          }
-        }}
+        onTrack={handleTrackCandidate}
+        onStartCodex={handleStartCandidate}
+        onCreate={handleCreateCandidate}
       />
       <OpenClawActiveWorkPanel
         runner={props.openClawRunner}
@@ -1677,33 +1696,9 @@ function OpenClawPage(props) {
                   runner={props.openClawRunner}
                   busyIssue={busyIssue}
                   onCopyPrompt={props.copyOpenClawCandidatePrompt}
-                  onTrack={async (candidate) => {
-                    setActionError("");
-                    try {
-                      await props.trackOpenClawCandidateWork(candidate);
-                    } catch (error) {
-                      setActionError(error.message || "Could not track local Codex work");
-                    }
-                  }}
-                  onStartCodex={async (candidate) => {
-                    setActionError("");
-                    try {
-                      await props.startOpenClawCodexWork(candidate);
-                    } catch (error) {
-                      setActionError(error.message || "Could not start local Codex");
-                    }
-                  }}
-                  onCreate={async (candidate) => {
-                    setActionError("");
-                    setBusyIssue(candidate.number);
-                    try {
-                      await props.createOpenClawCandidateCard(candidate);
-                    } catch (error) {
-                      setActionError(error.message || "Could not create card");
-                    } finally {
-                      setBusyIssue(null);
-                    }
-                  }}
+                  onTrack={handleTrackCandidate}
+                  onStartCodex={handleStartCandidate}
+                  onCreate={handleCreateCandidate}
                 />
               ))
             ) : (
@@ -1951,6 +1946,141 @@ function OpenClawRunnerPanel({ runner, preferences, onChange, onCheck }) {
             "runner accepted"}
         </div>
       ) : null}
+    </section>
+  );
+}
+
+function OpenClawCommandCenter({
+  workflow,
+  workflowError,
+  queues,
+  runner,
+  preferences,
+  governor,
+  canCreate,
+  canStartWork,
+  busyIssue,
+  onRefresh,
+  onCopyPrompt,
+  onTrack,
+  onStartCodex,
+  onCreate,
+}) {
+  const plan = openClawCommandPlan({
+    workflow,
+    workflowError,
+    queues,
+    runner,
+    preferences,
+    governor,
+  });
+  const candidate = plan.candidate;
+  const run = plan.run;
+  return (
+    <section class={`openclaw-command-center ${plan.tone}`} aria-label="Claw Queue command center">
+      <div class="command-main">
+        <div class="section-kicker">COMMAND CENTER</div>
+        <div class="command-title-row">
+          <span class={`command-pulse ${plan.tone}`} />
+          <h2>{plan.headline}</h2>
+        </div>
+        <p>{plan.detail}</p>
+        <div class="command-subline">
+          {plan.subject ? <span>{plan.subject}</span> : null}
+          {plan.meta.map((item) => (
+            <span key={item}>{item}</span>
+          ))}
+        </div>
+      </div>
+      <div class="command-actions">
+        {run ? (
+          <>
+            <button
+              type="button"
+              class="primary"
+              onClick={() => copyText(openClawRunResumePrompt(run))}
+            >
+              <Icon name="message-square-text" />
+              Resume
+            </button>
+            <button type="button" onClick={() => copyText(openClawRunHandoff(run))}>
+              <Icon name="send" />
+              Handoff
+            </button>
+            <button type="button" onClick={() => copyText(openClawRunNote(run))}>
+              <Icon name="copy" />
+              Note
+            </button>
+          </>
+        ) : candidate ? (
+          <>
+            <button
+              type="button"
+              class="primary"
+              title={openClawStartDisabledReason(candidate, canStartWork, runner)}
+              disabled={
+                runner?.status !== "connected" ||
+                !canStartWork ||
+                !candidate.signals.readyForPickup ||
+                runner?.startingIssue === candidate.number
+              }
+              onClick={() => onStartCodex(candidate)}
+            >
+              <Icon name="square-terminal" />
+              {runner?.startingIssue === candidate.number ? "Starting" : "Start"}
+            </button>
+            <button
+              type="button"
+              title={openClawTrackDisabledReason(candidate, runner)}
+              disabled={
+                runner?.status !== "connected" ||
+                !candidate.signals.readyForPickup ||
+                runner?.trackingIssue === candidate.number
+              }
+              onClick={() => onTrack(candidate)}
+            >
+              <Icon name="list-checks" />
+              {runner?.trackingIssue === candidate.number ? "Tracking" : "Track"}
+            </button>
+            <button type="button" onClick={() => onCopyPrompt(candidate)}>
+              <Icon name="copy" />
+              Prompt
+            </button>
+            <button
+              type="button"
+              disabled={
+                !canCreate || !candidate.signals.readyForPickup || busyIssue === candidate.number
+              }
+              onClick={() => onCreate(candidate)}
+            >
+              {busyIssue === candidate.number ? "Creating" : "Card"}
+            </button>
+          </>
+        ) : (
+          <>
+            <button type="button" class="primary" onClick={() => onRefresh()}>
+              <Icon name="refresh-cw" />
+              Refresh
+            </button>
+            <button
+              type="button"
+              onClick={() => copyText(openClawWorkerRunwayBrief(plan.runway, runner))}
+            >
+              <Icon name="clipboard-list" />
+              Lane plan
+            </button>
+          </>
+        )}
+      </div>
+      <div class="command-gates" aria-label="Claw Queue gates">
+        {plan.gates.map((gate) => (
+          <div class={`command-gate ${gate.tone}`} key={gate.label}>
+            <span>{gate.label}</span>
+            <strong>{gate.value}</strong>
+            <small>{gate.detail}</small>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
@@ -2879,6 +3009,138 @@ function openClawRunNote(run) {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function openClawCommandPlan({ workflow, workflowError, queues, runner, preferences, governor }) {
+  const runway = openClawWorkerRunway(queues, runner, preferences);
+  const runs = Array.isArray(runner?.runs) ? runner.runs : [];
+  const mission = openClawMissionControl(runs, runner);
+  const candidate = runway.lanes.find((lane) => lane.candidate)?.candidate || null;
+  const gates = openClawCommandGates({
+    workflow,
+    workflowError,
+    queues,
+    runner,
+    runway,
+    governor,
+    candidate,
+  });
+  if (mission.focusRun) {
+    const prUrl = openClawValidPrUrl(mission.focusRun.prUrl);
+    return {
+      runway,
+      gates,
+      run: mission.focusRun,
+      candidate: null,
+      tone: openClawRunTone(mission.focusRun) || "warn",
+      headline: `#${mission.focusRun.issueNumber || "?"}: ${openClawMissionHeadline(mission.focusRun)}`,
+      detail: openClawRunNextAction(mission.focusRun),
+      subject: openClawMissionLabel(mission.focusRun),
+      meta: [
+        mission.focusRun.queueId || "",
+        prUrl ? "PR linked" : "",
+        `${mission.plateCount} ${mission.plateCount === 1 ? "plate" : "plates"}`,
+      ].filter(Boolean),
+    };
+  }
+  if (candidate) {
+    const priority = openClawCandidatePriorityLabel(candidate);
+    const bridgeReady = runner?.status === "connected";
+    const newWorkReady = Boolean(governor?.canStartNewWork);
+    const blockReason = !newWorkReady
+      ? governor?.reasons?.[0] || "New work is paused by the current limits."
+      : !bridgeReady
+        ? "Connect the local Codex bridge before starting work."
+        : "";
+    const queueMeta = priority
+      ? candidate.queueId?.startsWith("maintainer")
+        ? candidate.queueId
+        : ""
+      : candidate.queueId || "";
+    return {
+      runway,
+      gates,
+      run: null,
+      candidate,
+      tone: bridgeReady && newWorkReady ? "ok" : "warn",
+      headline: blockReason ? "New work is paused" : `#${candidate.number}: next eligible issue`,
+      detail: blockReason || openClawCandidateWhy(candidate),
+      subject: blockReason
+        ? `Next held: #${candidate.number}`
+        : priority
+          ? `${priority} queue`
+          : "queueable",
+      meta: [
+        priority && blockReason ? priority : queueMeta,
+        candidate.author ? `@${candidate.author}` : "",
+      ].filter(Boolean),
+    };
+  }
+  const blocked = Boolean(workflowError || governor?.reasons?.length);
+  return {
+    runway,
+    gates,
+    run: null,
+    candidate: null,
+    tone: blocked ? "danger" : "warn",
+    headline: blocked ? "New work is paused" : "No eligible issue loaded",
+    detail:
+      workflowError ||
+      governor?.reasons?.[0] ||
+      "Refresh the queue, lower the test age gate, or wait for ClawSweeper-screened work.",
+    subject: blocked ? "blocked" : "idle",
+    meta: [],
+  };
+}
+
+function openClawCommandGates({
+  workflow,
+  workflowError,
+  queues,
+  runner,
+  runway,
+  governor,
+  candidate,
+}) {
+  const queueErrors = (Array.isArray(queues) ? queues : []).filter((queue) => queue?.error).length;
+  const prError = workflow?.pullRequests?.error;
+  const usageKnown = governor?.usageDrop !== null && governor?.usageDrop !== undefined;
+  const usageLabel = usageKnown ? `${governor.usageDrop}/${governor.usageLimit}` : "-";
+  return [
+    {
+      label: "GitHub",
+      value: workflowError ? "error" : queueErrors || prError ? "partial" : "ok",
+      detail:
+        workflowError || prError || (queueErrors ? `${queueErrors} queue errors` : "queues loaded"),
+      tone: workflowError ? "danger" : queueErrors || prError ? "warn" : "ok",
+    },
+    {
+      label: "Limits",
+      value: governor?.canStartNewWork ? "open" : "paused",
+      detail: governor?.reasons?.[0] || `usage ${usageLabel}`,
+      tone: governor?.canStartNewWork ? "ok" : "warn",
+    },
+    {
+      label: "Bridge",
+      value: runner?.status === "connected" ? "connected" : runner?.status || "unknown",
+      detail: runner?.info?.dryRun ? "dry-run" : runner?.error || "local Codex",
+      tone: runner?.status === "connected" ? "ok" : runner?.status === "error" ? "danger" : "warn",
+    },
+    {
+      label: "Lanes",
+      value: `${runway.filled}/${runway.capacity}`,
+      detail: `${runway.empty} ${runway.empty === 1 ? "open lane" : "open lanes"}`,
+      tone: runway.empty ? "ok" : "warn",
+    },
+    {
+      label: "Next",
+      value: candidate ? `#${candidate.number}` : "none",
+      detail: candidate
+        ? openClawCandidatePriorityLabel(candidate) || candidate.queueId || "queueable"
+        : "no candidate",
+      tone: candidate ? "ok" : "warn",
+    },
+  ];
 }
 
 function openClawWorkerRunway(queues, runner, preferences) {

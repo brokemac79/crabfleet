@@ -2016,6 +2016,157 @@
         border-color: rgb(239 68 68 / 0.34);
         background: rgb(239 68 68 / 0.1);
       }
+      .openclaw-command-center {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(210px, 0.28fr);
+        grid-template-areas:
+          "main actions"
+          "gates gates";
+        gap: 12px;
+        align-items: stretch;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background:
+          linear-gradient(135deg, rgb(16 185 129 / 0.08), transparent 36%), var(--dashboard-surface);
+        padding: 14px;
+      }
+      .openclaw-command-center.warn {
+        background:
+          linear-gradient(135deg, rgb(245 158 11 / 0.08), transparent 36%), var(--dashboard-surface);
+      }
+      .openclaw-command-center.danger {
+        background:
+          linear-gradient(135deg, rgb(239 68 68 / 0.08), transparent 36%), var(--dashboard-surface);
+      }
+      .command-main {
+        grid-area: main;
+        min-width: 0;
+        display: grid;
+        align-content: center;
+        gap: 7px;
+      }
+      .command-title-row {
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+      }
+      .command-title-row h2 {
+        min-width: 0;
+        overflow: hidden;
+        margin: 0;
+        color: var(--ink);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 20px;
+        font-weight: 760;
+      }
+      .command-pulse {
+        width: 10px;
+        height: 10px;
+        flex: 0 0 auto;
+        border-radius: 999px;
+        background: var(--success);
+        box-shadow: 0 0 0 5px rgb(16 185 129 / 0.1);
+      }
+      .command-pulse.warn {
+        background: var(--warning);
+        box-shadow: 0 0 0 5px rgb(245 158 11 / 0.1);
+      }
+      .command-pulse.danger {
+        background: #f87171;
+        box-shadow: 0 0 0 5px rgb(239 68 68 / 0.1);
+      }
+      .command-main p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      .command-subline {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .command-subline span {
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--panel);
+        color: var(--muted);
+        padding: 4px 8px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .command-actions {
+        grid-area: actions;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        align-content: center;
+      }
+      .command-actions button {
+        min-height: 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        padding: 0 10px;
+        white-space: nowrap;
+      }
+      .command-gates {
+        grid-area: gates;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+        gap: 8px;
+      }
+      .command-gate {
+        min-width: 0;
+        display: grid;
+        gap: 4px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 9px 10px;
+      }
+      .command-gate.ok {
+        border-color: rgb(16 185 129 / 0.24);
+        background: rgb(16 185 129 / 0.08);
+      }
+      .command-gate.warn {
+        border-color: rgb(245 158 11 / 0.28);
+        background: rgb(245 158 11 / 0.08);
+      }
+      .command-gate.danger {
+        border-color: rgb(239 68 68 / 0.34);
+        background: rgb(239 68 68 / 0.08);
+      }
+      .command-gate span,
+      .command-gate small {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--muted);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .command-gate span {
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+      .command-gate strong {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--ink);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 15px;
+      }
+      .command-gate small {
+        font-size: 11px;
+      }
       .openclaw-settings {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
@@ -2694,6 +2845,17 @@
         .openclaw-runner {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
+        .openclaw-command-center {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-areas:
+            "main"
+            "actions"
+            "gates";
+        }
+        .command-actions {
+          grid-template-columns: repeat(4, minmax(0, max-content));
+          justify-content: start;
+        }
         .active-work-mission {
           grid-template-columns: minmax(0, 1fr) minmax(220px, 0.7fr);
         }
@@ -2794,6 +2956,19 @@
           display: grid;
           grid-template-columns: 1fr;
           align-items: start;
+        }
+        .command-title-row {
+          align-items: start;
+        }
+        .command-title-row h2 {
+          white-space: normal;
+        }
+        .command-actions,
+        .command-gates {
+          grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+        }
+        .command-actions button {
+          width: 100%;
         }
         .openclaw-worker-runway .workflow-section-head {
           display: grid;
