@@ -165,6 +165,13 @@
         border-color: var(--primary-dark);
         box-shadow: 0 4px 10px rgb(94 106 210 / 0.35);
       }
+      button.primary[disabled],
+      button.primary[disabled]:hover {
+        border-color: var(--line);
+        background: var(--panel-2);
+        color: var(--muted);
+        box-shadow: none;
+      }
       button.ghost {
         border-color: transparent;
         background: transparent;
@@ -2070,6 +2077,7 @@
         display: inline-flex;
         align-items: center;
         justify-content: flex-end;
+        flex-wrap: wrap;
         gap: 8px;
       }
       .active-work-tools button,
@@ -2078,6 +2086,7 @@
         align-items: center;
         justify-content: center;
         gap: 7px;
+        white-space: nowrap;
       }
       .active-work-list {
         display: grid;
@@ -2108,6 +2117,16 @@
         font-size: 13px;
         font-weight: 700;
       }
+      .active-work-next,
+      .active-work-note {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .active-work-next {
+        color: var(--ink);
+      }
       .active-work-detail {
         min-width: 0;
         display: grid;
@@ -2124,6 +2143,17 @@
         padding: 6px 8px;
         text-overflow: ellipsis;
         white-space: nowrap;
+        font-size: 12px;
+      }
+      .active-work-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 6px;
+      }
+      .active-work-actions button {
+        min-height: 30px;
+        padding: 0 10px;
         font-size: 12px;
       }
       .openclaw-grid {
@@ -2229,11 +2259,14 @@
         align-items: center;
         justify-content: flex-end;
         flex-wrap: wrap;
-        max-width: 360px;
+        max-width: 470px;
       }
       .candidate-actions button:first-child {
         width: 36px;
         padding: 0;
+      }
+      .candidate-actions button {
+        white-space: nowrap;
       }
       .chip.ok {
         border-color: rgb(16 185 129 / 0.28);
@@ -2414,17 +2447,45 @@
         .session-head {
           grid-template-columns: 1fr;
         }
-        .candidate-actions {
+        .openclaw-active-work .workflow-section-head {
           display: grid;
-          grid-template-columns: 40px minmax(0, 1fr);
+          grid-template-columns: 1fr;
+          align-items: start;
+        }
+        .active-work-tools {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+          justify-content: stretch;
+          width: 100%;
+        }
+        .active-work-tools .chip,
+        .active-work-tools button {
+          width: 100%;
+        }
+        .candidate-actions {
+          display: flex;
+          flex-wrap: wrap;
           max-width: none;
           width: 100%;
         }
         .candidate-actions button {
-          width: 100%;
+          flex: 1 1 128px;
+          min-width: 118px;
+          width: auto;
+        }
+        .candidate-actions button:first-child {
+          flex: 0 0 40px;
+          width: 40px;
+          min-width: 40px;
         }
         .active-work-detail {
           justify-items: stretch;
+        }
+        .active-work-actions {
+          justify-content: stretch;
+        }
+        .active-work-actions button {
+          flex: 1 1 auto;
         }
         .session-grid {
           grid-template-columns: 1fr;

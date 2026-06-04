@@ -662,6 +662,81 @@ function App() {
     }
   }
 
+  async function trackOpenClawCandidateWork(candidate) {
+    const target = openClawRunner;
+    setOpenClawRunner((current) => ({
+      ...current,
+      trackingIssue: candidate.number,
+      error: "",
+    }));
+    try {
+      const response = await fetch(`${resolveRunnerUrl(target.url)}/track`, {
+        method: "POST",
+        headers: {
+          ...openClawRunnerHeaders(target),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          repo: openClawState.data?.repo || "openclaw/openclaw",
+          issueNumber: candidate.number,
+          issueUrl: candidate.url,
+          title: candidate.title,
+          queueId: candidate.queueId,
+          source: "manual",
+          prompt: openClawCandidatePrompt(candidate),
+          note: "Tracked for copy/paste, tmux, or external Codex work.",
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.ok === false) {
+        throw new Error(body.error || `Runner returned ${response.status}`);
+      }
+      const runs = await fetchOpenClawRunnerRuns(target).catch(() =>
+        body.run ? [body.run, ...(openClawRunner.runs || [])] : openClawRunner.runs || [],
+      );
+      setOpenClawRunner((current) => ({
+        ...current,
+        status: "connected",
+        trackingIssue: null,
+        lastRun: body.run || body,
+        runs,
+        runsError: "",
+      }));
+      return body;
+    } catch (error) {
+      setOpenClawRunner((current) => ({
+        ...current,
+        trackingIssue: null,
+        error: error.message || "Could not track local Codex work",
+      }));
+      throw error;
+    }
+  }
+
+  async function updateOpenClawRunnerRun(run, patch) {
+    const target = openClawRunner;
+    const response = await fetch(
+      `${resolveRunnerUrl(target.url)}/runs/${encodeURIComponent(run.id)}`,
+      {
+        method: "PATCH",
+        headers: {
+          ...openClawRunnerHeaders(target),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(patch),
+      },
+    );
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body.ok === false) {
+      throw new Error(body.error || `Runner returned ${response.status}`);
+    }
+    const runs = await fetchOpenClawRunnerRuns(target).catch(() =>
+      (openClawRunner.runs || []).map((item) => (item.id === body.run?.id ? body.run : item)),
+    );
+    setOpenClawRunner((current) => ({ ...current, runs, runsError: "" }));
+    return body.run;
+  }
+
   async function refreshOpenClawRunnerRuns(settings = openClawRunner) {
     const target = settings;
     setOpenClawRunner((current) => ({ ...current, runsLoading: true, runsError: "" }));
@@ -1093,6 +1168,8 @@ function App() {
     updateOpenClawRunnerSettings,
     checkOpenClawRunner,
     refreshOpenClawRunnerRuns,
+    trackOpenClawCandidateWork,
+    updateOpenClawRunnerRun,
     startOpenClawCodexWork,
     createOpenClawHandoff,
   };
@@ -1523,6 +1600,7 @@ function OpenClawPage(props) {
       <OpenClawActiveWorkPanel
         runner={props.openClawRunner}
         onRefresh={props.refreshOpenClawRunnerRuns}
+        onUpdate={props.updateOpenClawRunnerRun}
       />
       <section class="openclaw-grid">
         <div class="openclaw-main">
@@ -1543,6 +1621,14 @@ function OpenClawPage(props) {
                   runner={props.openClawRunner}
                   busyIssue={busyIssue}
                   onCopyPrompt={props.copyOpenClawCandidatePrompt}
+                  onTrack={async (candidate) => {
+                    setActionError("");
+                    try {
+                      await props.trackOpenClawCandidateWork(candidate);
+                    } catch (error) {
+                      setActionError(error.message || "Could not track local Codex work");
+                    }
+                  }}
                   onStartCodex={async (candidate) => {
                     setActionError("");
                     try {
@@ -1795,6 +1881,11 @@ function OpenClawRunnerPanel({ runner, preferences, onChange, onCheck }) {
         </button>
       </div>
       {runner?.error ? <div class="workflow-banner error">{runner.error}</div> : null}
+      {runner?.info?.dryRun ? (
+        <div class="workflow-banner">
+          Dry-run bridge: Start Codex records prompts and active-work rows without launching Codex.
+        </div>
+      ) : null}
       {runner?.lastRun ? (
         <div class="workflow-banner">
           Started issue #{runner.lastRun.issueNumber || runner.lastRun.issue_number}:{" "}
@@ -1808,9 +1899,39 @@ function OpenClawRunnerPanel({ runner, preferences, onChange, onCheck }) {
   );
 }
 
-function OpenClawActiveWorkPanel({ runner, onRefresh }) {
+function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
   const runs = Array.isArray(runner?.runs) ? runner.runs : [];
   const activeCount = runs.filter((run) => openClawRunActive(run)).length;
+  const maxActive = runner?.info?.maxActive || "-";
+  const readyCount = runs.filter((run) => run?.status === "ready").length;
+  const parkedCount = runs.filter((run) => run?.status === "parked").length;
+  const inactiveRuns = runs.filter((run) => openClawRunInactive(run));
+  const [busyRun, setBusyRun] = useState(null);
+  const [actionError, setActionError] = useState("");
+  async function update(run, patch) {
+    setActionError("");
+    setBusyRun(run.id);
+    try {
+      await onUpdate(run, patch);
+    } catch (error) {
+      setActionError(error.message || "Could not update active work");
+    } finally {
+      setBusyRun(null);
+    }
+  }
+  async function archiveInactiveRuns() {
+    setActionError("");
+    setBusyRun("archive-inactive");
+    try {
+      for (const run of inactiveRuns) {
+        await onUpdate(run, { status: "archive" });
+      }
+    } catch (error) {
+      setActionError(error.message || "Could not archive inactive work");
+    } finally {
+      setBusyRun(null);
+    }
+  }
   return (
     <section class="openclaw-active-work">
       <header class="workflow-section-head">
@@ -1819,7 +1940,26 @@ function OpenClawActiveWorkPanel({ runner, onRefresh }) {
           <h2>Codex issue runs</h2>
         </div>
         <div class="active-work-tools">
-          <span class="chip">{activeCount} active</span>
+          <span class="chip">
+            {activeCount}/{maxActive} active
+          </span>
+          <span class="chip ok">{readyCount} ready</span>
+          <span class="chip warn">{parkedCount} parked</span>
+          {inactiveRuns.length ? <span class="chip">{inactiveRuns.length} inactive</span> : null}
+          {inactiveRuns.length ? (
+            <button
+              type="button"
+              disabled={
+                runner?.status !== "connected" ||
+                runner?.runsLoading ||
+                busyRun === "archive-inactive"
+              }
+              onClick={archiveInactiveRuns}
+            >
+              <Icon name="archive" />
+              {busyRun === "archive-inactive" ? "Archiving..." : "Archive inactive"}
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={runner?.status !== "connected" || runner?.runsLoading}
@@ -1830,30 +1970,68 @@ function OpenClawActiveWorkPanel({ runner, onRefresh }) {
           </button>
         </div>
       </header>
+      {actionError ? <div class="workflow-banner error">{actionError}</div> : null}
       {runner?.runsError ? <div class="workflow-banner error">{runner.runsError}</div> : null}
       {runs.length ? (
         <div class="active-work-list">
-          {runs.slice(0, 12).map((run) => (
-            <article class="active-work-row" key={run.id}>
-              <div class="active-work-main">
-                <a href={run.issueUrl || "#"} target="_blank" rel="noreferrer">
-                  #{run.issueNumber || "?"} {run.title || "OpenClaw issue"}
-                </a>
-                <div class="candidate-meta">
-                  <span class={`chip ${openClawRunTone(run)}`}>{openClawRunLabel(run)}</span>
-                  {run.queueId ? <span class="chip">{run.queueId}</span> : null}
-                  {run.pid ? <span class="chip">pid {run.pid}</span> : null}
-                  <span class="chip">{openClawRunWhen(run)}</span>
+          {runs.slice(0, 12).map((run) => {
+            const isLive = openClawRunActive(run);
+            return (
+              <article class="active-work-row" key={run.id}>
+                <div class="active-work-main">
+                  <a href={run.issueUrl || "#"} target="_blank" rel="noreferrer">
+                    #{run.issueNumber || "?"} {run.title || "OpenClaw issue"}
+                  </a>
+                  <div class="candidate-meta">
+                    <span class={`chip ${openClawRunTone(run)}`}>{openClawRunLabel(run)}</span>
+                    {run.queueId ? <span class="chip">{run.queueId}</span> : null}
+                    {run.source ? <span class="chip">{run.source}</span> : null}
+                    {run.pid ? <span class="chip">pid {run.pid}</span> : null}
+                    <span class="chip">{openClawRunWhen(run)}</span>
+                  </div>
+                  <p class="active-work-next">{openClawRunNextAction(run)}</p>
+                  {run.note ? <p class="active-work-note">{run.note}</p> : null}
                 </div>
-              </div>
-              <div class="active-work-detail">
-                <code>{run.id}</code>
-                {run.logPath ? (
-                  <button onClick={() => copyText(run.logPath)}>Copy log</button>
-                ) : null}
-              </div>
-            </article>
-          ))}
+                <div class="active-work-detail">
+                  <code>{run.id}</code>
+                  <div class="active-work-actions">
+                    <button onClick={() => copyText(openClawRunNote(run))}>Copy note</button>
+                    {run.logPath ? (
+                      <button onClick={() => copyText(run.logPath)}>Copy log</button>
+                    ) : null}
+                    <button
+                      disabled={isLive || busyRun === run.id || run.status === "parked"}
+                      onClick={() =>
+                        update(run, {
+                          status: "parked",
+                          note: "Parked pending proof, Mantis, CI, or maintainer/reporter input.",
+                        })
+                      }
+                    >
+                      Park
+                    </button>
+                    <button
+                      disabled={isLive || busyRun === run.id || run.status === "ready"}
+                      onClick={() =>
+                        update(run, {
+                          status: "ready",
+                          note: "Ready for maintainer look once PR/proof/CI/Codex review are linked.",
+                        })
+                      }
+                    >
+                      Ready
+                    </button>
+                    <button
+                      disabled={isLive || busyRun === run.id}
+                      onClick={() => update(run, { status: "archive" })}
+                    >
+                      Archive
+                    </button>
+                  </div>
+                </div>
+              </article>
+            );
+          })}
         </div>
       ) : (
         <div class="empty">No Codex issue runs yet.</div>
@@ -1869,6 +2047,7 @@ function OpenClawQueue({
   runner,
   busyIssue,
   onCopyPrompt,
+  onTrack,
   onStartCodex,
   onCreate,
 }) {
@@ -1885,61 +2064,92 @@ function OpenClawQueue({
       {queue.error ? <div class="workflow-banner error">{queue.error}</div> : null}
       <div class="candidate-list">
         {queue.candidates.length ? (
-          queue.candidates.map((candidate) => (
-            <article class="candidate-row" key={`${queue.definition.id}-${candidate.number}`}>
-              <div class="candidate-main">
-                <a href={candidate.url} target="_blank" rel="noreferrer">
-                  #{candidate.number} {candidate.title}
-                </a>
-                <div class="candidate-meta">
-                  {candidate.author ? <span class="chip">@{candidate.author}</span> : null}
-                  <span class={`chip ${candidate.signals.readyForPickup ? "ok" : "warn"}`}>
-                    {candidate.signals.readyForPickup ? "ready" : candidate.signals.ageGate}
-                  </span>
-                  {candidate.signals.sourceRepro ? <span class="chip">source repro</span> : null}
-                  {candidate.signals.currentMainRepro ? (
-                    <span class="chip">current main</span>
-                  ) : null}
-                  {candidate.signals.needsLiveValidation ? (
-                    <span class="chip warn">live proof</span>
-                  ) : null}
+          queue.candidates.map((candidate) => {
+            const issueInWork = openClawRunnerHasIssueRun(runner, candidate.number, candidate.url);
+            return (
+              <article class="candidate-row" key={`${queue.definition.id}-${candidate.number}`}>
+                <div class="candidate-main">
+                  <a href={candidate.url} target="_blank" rel="noreferrer">
+                    #{candidate.number} {candidate.title}
+                  </a>
+                  <div class="candidate-meta">
+                    {candidate.author ? <span class="chip">@{candidate.author}</span> : null}
+                    <span class={`chip ${candidate.signals.readyForPickup ? "ok" : "warn"}`}>
+                      {candidate.signals.readyForPickup ? "ready" : candidate.signals.ageGate}
+                    </span>
+                    {candidate.signals.sourceRepro ? <span class="chip">source repro</span> : null}
+                    {candidate.signals.currentMainRepro ? (
+                      <span class="chip">current main</span>
+                    ) : null}
+                    {candidate.signals.needsLiveValidation ? (
+                      <span class="chip warn">live proof</span>
+                    ) : null}
+                    {issueInWork ? <span class="chip warn">in work</span> : null}
+                  </div>
                 </div>
-              </div>
-              <div class="candidate-actions">
-                <button onClick={() => window.open(candidate.url, "_blank", "noopener")}>
-                  <Icon name="external-link" />
-                </button>
-                <button onClick={() => onCopyPrompt(candidate)}>
-                  <Icon name="copy" />
-                  Copy prompt
-                </button>
-                <button
-                  title={openClawStartDisabledReason(candidate, canStartWork, runner)}
-                  disabled={
-                    runner?.status !== "connected" ||
-                    !canStartWork ||
-                    !candidate.signals.readyForPickup ||
-                    runner?.startingIssue === candidate.number
-                  }
-                  onClick={() => onStartCodex(candidate)}
-                >
-                  <Icon name="square-terminal" />
-                  {runner?.startingIssue === candidate.number ? "Starting..." : "Start Codex"}
-                </button>
-                <button
-                  class="primary"
-                  disabled={
-                    !canCreate ||
-                    !candidate.signals.readyForPickup ||
-                    busyIssue === candidate.number
-                  }
-                  onClick={() => onCreate(candidate)}
-                >
-                  {busyIssue === candidate.number ? "Creating..." : "New card"}
-                </button>
-              </div>
-            </article>
-          ))
+                <div class="candidate-actions">
+                  <button onClick={() => window.open(candidate.url, "_blank", "noopener")}>
+                    <Icon name="external-link" />
+                  </button>
+                  <button onClick={() => onCopyPrompt(candidate)}>
+                    <Icon name="copy" />
+                    Copy prompt
+                  </button>
+                  <button
+                    title={openClawTrackDisabledReason(candidate, runner)}
+                    disabled={
+                      runner?.status !== "connected" ||
+                      issueInWork ||
+                      !candidate.signals.readyForPickup ||
+                      runner?.trackingIssue === candidate.number
+                    }
+                    onClick={() => onTrack(candidate)}
+                  >
+                    <Icon name="list-checks" />
+                    {issueInWork
+                      ? "Tracked"
+                      : runner?.trackingIssue === candidate.number
+                        ? "Tracking..."
+                        : "Track"}
+                  </button>
+                  <button
+                    title={openClawStartDisabledReason(candidate, canStartWork, runner)}
+                    disabled={
+                      runner?.status !== "connected" ||
+                      issueInWork ||
+                      !canStartWork ||
+                      !candidate.signals.readyForPickup ||
+                      runner?.startingIssue === candidate.number
+                    }
+                    onClick={() => onStartCodex(candidate)}
+                  >
+                    <Icon name="square-terminal" />
+                    {issueInWork
+                      ? "In work"
+                      : runner?.startingIssue === candidate.number
+                        ? "Starting..."
+                        : "Start Codex"}
+                  </button>
+                  <button
+                    class="primary"
+                    disabled={
+                      !canCreate ||
+                      issueInWork ||
+                      !candidate.signals.readyForPickup ||
+                      busyIssue === candidate.number
+                    }
+                    onClick={() => onCreate(candidate)}
+                  >
+                    {issueInWork
+                      ? "On plate"
+                      : busyIssue === candidate.number
+                        ? "Creating..."
+                        : "New card"}
+                  </button>
+                </div>
+              </article>
+            );
+          })
         ) : (
           <div class="empty">No matching issues.</div>
         )}
@@ -2071,6 +2281,9 @@ function openClawPreferenceDraft(preferences) {
 
 function openClawStartDisabledReason(candidate, canStartWork, runner) {
   if (runner?.status !== "connected") return "Connect the local Codex bridge first.";
+  if (openClawRunnerHasIssueRun(runner, candidate?.number, candidate?.url)) {
+    return "This issue is already on Active Work.";
+  }
   if (!canStartWork) return "New work is paused by your Open PR or usage limits.";
   if (candidate?.signals?.ageGate === "too-new") {
     return "Waiting for the configured minimum issue age. Set Min issue age to 0 for fork or dummy testing.";
@@ -2080,6 +2293,21 @@ function openClawStartDisabledReason(candidate, canStartWork, runner) {
   }
   if (runner?.startingIssue === candidate?.number) return "Starting local Codex work.";
   return "Start local Codex with this issue prompt.";
+}
+
+function openClawTrackDisabledReason(candidate, runner) {
+  if (runner?.status !== "connected") return "Connect the local Codex bridge first.";
+  if (openClawRunnerHasIssueRun(runner, candidate?.number, candidate?.url)) {
+    return "This issue is already on Active Work.";
+  }
+  if (candidate?.signals?.ageGate === "too-new") {
+    return "Waiting for the configured minimum issue age. Set Min issue age to 0 for fork or dummy testing.";
+  }
+  if (!candidate?.signals?.readyForPickup) {
+    return "This issue is not ready for pickup under the current ClawSweeper labels.";
+  }
+  if (runner?.trackingIssue === candidate?.number) return "Tracking this issue.";
+  return "Track this issue as manually started work.";
 }
 
 function openClawCandidatePrompt(candidate) {
@@ -2122,6 +2350,7 @@ function loadOpenClawRunnerSettings() {
       runsLoading: false,
       runsError: "",
       startingIssue: null,
+      trackingIssue: null,
     };
   } catch {
     return {
@@ -2135,8 +2364,37 @@ function loadOpenClawRunnerSettings() {
       runsLoading: false,
       runsError: "",
       startingIssue: null,
+      trackingIssue: null,
     };
   }
+}
+
+function openClawRunnerHasIssueRun(runner, issueNumber, issueUrl) {
+  const issueKey = openClawIssueKey(issueNumber, issueUrl);
+  if (!issueKey) return false;
+  return Array.isArray(runner?.runs)
+    ? runner.runs.some((run) => openClawIssueKey(run?.issueNumber, run?.issueUrl) === issueKey)
+    : false;
+}
+
+function openClawIssueKey(issueNumber, issueUrl) {
+  const normalizedNumber = Number(issueNumber);
+  let parsedIssueNumber = Number.isFinite(normalizedNumber) ? Math.trunc(normalizedNumber) : null;
+  try {
+    const url = new URL(String(issueUrl || ""));
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length >= 4 && parts[2] === "issues") {
+      const urlIssueNumber = Number(parts[3]);
+      parsedIssueNumber = Number.isFinite(urlIssueNumber)
+        ? Math.trunc(urlIssueNumber)
+        : parsedIssueNumber;
+      if (parsedIssueNumber) {
+        return `${url.hostname.toLowerCase()}/${parts[0].toLowerCase()}/${parts[1].toLowerCase()}#${parsedIssueNumber}`;
+      }
+    }
+  } catch {}
+  if (parsedIssueNumber) return `#${parsedIssueNumber}`;
+  return "";
 }
 
 function resolveRunnerUrl(value) {
@@ -2194,10 +2452,18 @@ function openClawRunActive(run) {
   return run?.status === "starting" || run?.status === "running";
 }
 
+function openClawRunInactive(run) {
+  return ["completed", "dry-run", "failed", "stale"].includes(run?.status);
+}
+
 function openClawRunTone(run) {
-  if (run?.status === "completed" || run?.status === "dry-run") return "ok";
-  if (run?.status === "failed") return "danger";
-  if (openClawRunActive(run)) return "warn";
+  if (run?.status === "completed" || run?.status === "dry-run" || run?.status === "ready") {
+    return "ok";
+  }
+  if (run?.status === "failed" || run?.status === "stale") return "danger";
+  if (openClawRunActive(run) || run?.status === "tracked" || run?.status === "parked") {
+    return "warn";
+  }
   return "";
 }
 
@@ -2217,6 +2483,45 @@ function openClawRunWhen(run) {
   const hours = Math.round(minutes / 60);
   if (hours < 48) return `${hours}h ago`;
   return new Date(parsed).toLocaleDateString();
+}
+
+function openClawRunNextAction(run) {
+  switch (run?.status) {
+    case "running":
+    case "starting":
+      return "Watch Codex, then open/update the PR only after proof and Codex review.";
+    case "tracked":
+      return "External work is on your plate; keep this row until a PR, blocker, or ready handoff exists.";
+    case "dry-run":
+      return "Dry run captured the prompt; restart the bridge without --dry-run for real execution.";
+    case "completed":
+      return "Check proof, PR state, CI, and ClawSweeper; then mark ready or park.";
+    case "ready":
+      return "Ready for maintainer look; use the handoff text once the PR/proof links are in place.";
+    case "parked":
+      return "Parked until missing proof, Mantis, CI, or a maintainer/reporter decision is available.";
+    case "failed":
+      return "Open the log, fix the setup or prompt problem, then retry or park.";
+    case "stale":
+      return "The bridge restarted while this was active; verify the external session before continuing.";
+    default:
+      return "Keep this row updated until the issue is parked, ready, or archived.";
+  }
+}
+
+function openClawRunNote(run) {
+  const issue = run?.issueUrl || `#${run?.issueNumber || "?"}`;
+  return [
+    `OpenClaw work: #${run?.issueNumber || "?"} ${run?.title || ""}`.trim(),
+    `Issue: ${issue}`,
+    `Status: ${openClawRunLabel(run)}`,
+    run?.queueId ? `Queue: ${run.queueId}` : "",
+    run?.id ? `Run: ${run.id}` : "",
+    run?.note ? `Note: ${run.note}` : "",
+    `Next: ${openClawRunNextAction(run)}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function nullableFormNumber(value) {

@@ -71,14 +71,165 @@ test("local Codex bridge marks log setup failures as failed runs", async (t) => 
   await waitForHealth(base, token, runner);
   const first = await postStart(base, token, "first bad log prompt");
   const second = await postStart(base, token, "second bad log prompt");
+  const tracked = await postTrack(base, token, "manual bad log prompt");
 
   assert.equal(first.status, 500);
   assert.equal(second.status, 500);
+  assert.equal(tracked.status, 500);
   assert.notEqual(second.status, 409);
 
   const runs = await getRuns(base, token);
   assert.equal(runs.runs[0].status, "failed");
   assert.equal(runs.runs[1].status, "failed");
+  assert.equal(
+    runs.runs.some((run: any) => run.status === "tracked" || run.issueNumber === 2),
+    false,
+  );
+});
+
+test("local Codex bridge persists manual tracked work and archived rows", async (t) => {
+  const logDir = await fs.mkdtemp(path.join(os.tmpdir(), "cf-run-state-"));
+  const port = await freePort();
+  const token = "runner-state-token";
+  const base = `http://127.0.0.1:${port}`;
+  let runner = startRunner([
+    "--workspace",
+    repoRoot,
+    "--port",
+    String(port),
+    "--token",
+    token,
+    "--log-dir",
+    logDir,
+  ]);
+  t.after(() => stopRunner(runner));
+
+  await waitForHealth(base, token, runner);
+  const tracked = await postTrack(base, token, "manual prompt");
+  assert.equal(tracked.status, 201);
+  assert.equal(tracked.body.run.status, "tracked");
+  const duplicate = await postTrack(base, token, "duplicate manual prompt");
+  assert.equal(duplicate.status, 201);
+  assert.equal(duplicate.body.run.id, tracked.body.run.id);
+  const forkIssue = await postTrackIssue(base, token, {
+    issueNumber: 2,
+    issueUrl: "https://github.com/brokemac79/openclaw/issues/2",
+    prompt: "same issue number in a fork",
+  });
+  assert.equal(forkIssue.status, 201);
+  assert.notEqual(forkIssue.body.run.id, tracked.body.run.id);
+  const [raceOne, raceTwo] = await Promise.all([
+    postTrackIssue(base, token, {
+      issueNumber: 3,
+      issueUrl: "https://github.com/openclaw/openclaw/issues/3",
+      prompt: "first concurrent manual prompt",
+    }),
+    postTrackIssue(base, token, {
+      issueNumber: 3,
+      issueUrl: "https://github.com/openclaw/openclaw/issues/3",
+      prompt: "second concurrent manual prompt",
+    }),
+  ]);
+  assert.equal(raceOne.status, 201);
+  assert.equal(raceTwo.status, 201);
+  assert.equal(raceOne.body.run.id, raceTwo.body.run.id);
+  const fakeLive = await patchRun(base, token, tracked.body.run.id, { status: "running" });
+  assert.equal(fakeLive.status, 409);
+  assert.match(fakeLive.body.error, /live status/);
+  const stillTracked = await getRun(base, token, tracked.body.run.id);
+  assert.equal(stillTracked.run.status, "tracked");
+
+  const parked = await patchRun(base, token, tracked.body.run.id, {
+    status: "parked",
+    note: "waiting for Mantis proof",
+  });
+  assert.equal(parked.status, 200);
+  assert.equal(parked.body.run.status, "parked");
+  await waitForPersistedRun(logDir, tracked.body.run.id, "parked");
+
+  await stopRunner(runner);
+  runner = startRunner([
+    "--workspace",
+    repoRoot,
+    "--port",
+    String(port),
+    "--token",
+    token,
+    "--log-dir",
+    logDir,
+  ]);
+  await waitForHealth(base, token, runner);
+
+  const restored = await getRuns(base, token);
+  assert.equal(restored.runs[0].id, tracked.body.run.id);
+  assert.equal(restored.runs[0].status, "parked");
+  assert.equal(restored.runs[0].note, "waiting for Mantis proof");
+
+  const archived = await patchRun(base, token, tracked.body.run.id, { status: "archive" });
+  assert.equal(archived.status, 200);
+  assert.equal(archived.body.run.status, "archived");
+
+  const visible = await getRuns(base, token);
+  assert.equal(
+    visible.runs.some((run: any) => run.id === tracked.body.run.id),
+    false,
+  );
+});
+
+test("local Codex bridge dedupes and persists active work beyond display caps", async (t) => {
+  const logDir = await fs.mkdtemp(path.join(os.tmpdir(), "cf-run-history-"));
+  const port = await freePort();
+  const token = "runner-history-token";
+  const base = `http://127.0.0.1:${port}`;
+  const runner = startRunner([
+    "--workspace",
+    repoRoot,
+    "--port",
+    String(port),
+    "--token",
+    token,
+    "--log-dir",
+    logDir,
+  ]);
+  t.after(() => stopRunner(runner));
+
+  await waitForHealth(base, token, runner);
+  const first = await postTrackIssue(base, token, {
+    issueNumber: 1,
+    issueUrl: "https://github.com/openclaw/openclaw/issues/1",
+    prompt: "first history prompt",
+  });
+  assert.equal(first.status, 201);
+
+  for (let issueNumber = 2; issueNumber <= 55; issueNumber += 1) {
+    const tracked = await postTrackIssue(base, token, {
+      issueNumber,
+      issueUrl: `https://github.com/openclaw/openclaw/issues/${issueNumber}`,
+      prompt: `history prompt ${issueNumber}`,
+    });
+    assert.equal(tracked.status, 201);
+  }
+
+  const duplicate = await postTrackIssue(base, token, {
+    issueNumber: 1,
+    issueUrl: "https://github.com/openclaw/openclaw/issues/1",
+    prompt: "duplicate outside visible cap",
+  });
+  assert.equal(duplicate.status, 201);
+  assert.equal(duplicate.body.run.id, first.body.run.id);
+
+  for (let issueNumber = 56; issueNumber <= 205; issueNumber += 1) {
+    const tracked = await postTrackIssue(base, token, {
+      issueNumber,
+      issueUrl: `https://github.com/openclaw/openclaw/issues/${issueNumber}`,
+      prompt: `history prompt ${issueNumber}`,
+    });
+    assert.equal(tracked.status, 201);
+  }
+
+  const parked = await patchRun(base, token, first.body.run.id, { status: "parked" });
+  assert.equal(parked.status, 200);
+  await waitForPersistedRun(logDir, first.body.run.id, "parked");
 });
 
 test("local Codex bridge tracks parallel active runs up to max-active", async (t) => {
@@ -107,10 +258,13 @@ test("local Codex bridge tracks parallel active runs up to max-active", async (t
 
   const first = await postStart(base, token, "first parallel prompt");
   const second = await postStart(base, token, "second parallel prompt");
+  const hidden = await patchRun(base, token, first.body.run.id, { status: "ready" });
   const third = await postStart(base, token, "third parallel prompt");
 
   assert.equal(first.status, 202);
   assert.equal(second.status, 202);
+  assert.equal(hidden.status, 409);
+  assert.match(hidden.body.error, /Codex process is active/);
   assert.equal(third.status, 409);
   assert.match(third.body.error, /2 active Codex run/);
 
@@ -238,6 +392,48 @@ async function postStart(base: string, token: string, prompt: string) {
   return { body: await response.json().catch(() => ({})), status: response.status };
 }
 
+async function postTrack(base: string, token: string, prompt: string) {
+  return postTrackIssue(base, token, {
+    issueNumber: 2,
+    issueUrl: "https://github.com/openclaw/openclaw/issues/2",
+    prompt,
+  });
+}
+
+async function postTrackIssue(
+  base: string,
+  token: string,
+  issue: { issueNumber: number; issueUrl: string; prompt: string },
+) {
+  const response = await fetch(`${base}/track`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      issueNumber: issue.issueNumber,
+      issueUrl: issue.issueUrl,
+      queueId: "manual",
+      title: "manual track probe",
+      prompt: issue.prompt,
+    }),
+  });
+  return { body: await response.json().catch(() => ({})), status: response.status };
+}
+
+async function patchRun(base: string, token: string, id: string, body: Record<string, unknown>) {
+  const response = await fetch(`${base}/runs/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  return { body: await response.json().catch(() => ({})), status: response.status };
+}
+
 async function getRun(base: string, token: string, id: string) {
   const response = await fetch(`${base}/runs/${encodeURIComponent(id)}`, {
     headers: { authorization: `Bearer ${token}` },
@@ -274,6 +470,21 @@ async function writeFakeCodexCommand(directory: string): Promise<string> {
     mode: 0o755,
   });
   return command;
+}
+
+async function waitForPersistedRun(logDir: string, id: string, status: string) {
+  const statePath = path.join(logDir, "runs.json");
+  let last = "";
+  for (let index = 0; index < 60; index += 1) {
+    try {
+      last = await fs.readFile(statePath, "utf8");
+      const state = JSON.parse(last);
+      const run = state.runs?.find((item: any) => item.id === id);
+      if (run?.status === status) return run;
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`run ${id} was not persisted as ${status}: ${last}`);
 }
 
 async function freePort(): Promise<number> {

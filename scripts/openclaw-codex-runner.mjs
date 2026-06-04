@@ -26,12 +26,17 @@ const defaultLogDir = path.join(
   sha256(workspace).slice(0, 16),
 );
 const logDir = path.resolve(String(args["log-dir"] || defaultLogDir));
+const statePath = path.join(logDir, "runs.json");
 const runs = new Map();
+const trackReservations = new Map();
+let persistTimer = null;
 
 if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
   console.error(`Workspace does not exist or is not a directory: ${workspace}`);
   process.exit(1);
 }
+
+await loadPersistedRuns();
 
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
@@ -78,7 +83,7 @@ async function handleRequest(request, response) {
 
   if (url.pathname === "/runs" && request.method === "GET") {
     if (!authorized(request)) return unauthorized(request, response);
-    sendJson(request, response, { ok: true, runs: [...runs.values()].slice(-50).reverse() });
+    sendJson(request, response, { ok: true, runs: visibleRuns() });
     return;
   }
 
@@ -92,6 +97,25 @@ async function handleRequest(request, response) {
       run ? { ok: true, run } : { ok: false, error: "run not found" },
       run ? 200 : 404,
     );
+    return;
+  }
+
+  if (runMatch && request.method === "PATCH") {
+    if (!authorized(request)) return unauthorized(request, response);
+    const id = decodeURIComponent(runMatch[1] || "");
+    const run = runs.get(id);
+    if (!run) {
+      sendJson(request, response, { ok: false, error: "run not found" }, 404);
+      return;
+    }
+    const body = await readJson(request);
+    const updateError = updateRunFromBody(run, body);
+    if (updateError) {
+      sendJson(request, response, { ok: false, error: updateError.error }, updateError.status);
+      return;
+    }
+    persistRunsSoon();
+    sendJson(request, response, { ok: true, run });
     return;
   }
 
@@ -123,6 +147,14 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (url.pathname === "/track" && request.method === "POST") {
+    if (!authorized(request)) return unauthorized(request, response);
+    const body = await readJson(request);
+    const run = await trackManualRun(body);
+    sendJson(request, response, { ok: true, run }, 201);
+    return;
+  }
+
   sendJson(request, response, { ok: false, error: "not found" }, 404);
 }
 
@@ -144,8 +176,12 @@ async function startCodexRun(body, prompt) {
     exitCode: null,
     signal: null,
     error: null,
+    note: null,
+    source: "codex",
+    updatedAt: new Date().toISOString(),
   };
   runs.set(id, run);
+  persistRunsSoon();
 
   let log;
   try {
@@ -172,6 +208,8 @@ async function startCodexRun(body, prompt) {
     log.end();
     run.finishedAt = new Date().toISOString();
     run.exitCode = 0;
+    run.updatedAt = run.finishedAt;
+    persistRunsSoon();
     return run;
   }
 
@@ -199,14 +237,17 @@ async function startCodexRun(body, prompt) {
     run.status = "failed";
     run.error = error.message || String(error);
     run.finishedAt = new Date().toISOString();
+    run.updatedAt = run.finishedAt;
     log.write(`${JSON.stringify({ type: "error", error: run.error, at: run.finishedAt })}\n`);
     log.end();
+    persistRunsSoon();
   });
   child.once("exit", (code, signal) => {
     run.status = code === 0 ? "completed" : "failed";
     run.exitCode = code;
     run.signal = signal;
     run.finishedAt = new Date().toISOString();
+    run.updatedAt = run.finishedAt;
     log.write(
       `${JSON.stringify({
         type: "exit",
@@ -216,6 +257,7 @@ async function startCodexRun(body, prompt) {
       })}\n`,
     );
     log.end();
+    persistRunsSoon();
   });
   child.stdin.end(prompt);
 
@@ -224,6 +266,63 @@ async function startCodexRun(body, prompt) {
     throw new Error(run.error);
   }
   return run;
+}
+
+async function trackManualRun(body) {
+  const issueNumber = integer(body.issueNumber, null);
+  const issueUrl = clean(body.issueUrl, 500);
+  const existing = visibleRunForIssue(issueNumber, issueUrl);
+  if (existing) return existing;
+  const key = issueKey(issueNumber, issueUrl);
+  const pending = key ? trackReservations.get(key) : null;
+  if (pending) return pending;
+
+  const pendingRun = createManualTrackedRun(body, issueNumber, issueUrl);
+  if (key) {
+    trackReservations.set(key, pendingRun);
+    pendingRun
+      .finally(() => {
+        trackReservations.delete(key);
+      })
+      .catch(() => {});
+  }
+  return pendingRun;
+}
+
+async function createManualTrackedRun(body, issueNumber, issueUrl) {
+  const id = `oc-track-${Date.now().toString(36)}-${crypto.randomBytes(4).toString("hex")}`;
+  const now = new Date().toISOString();
+  const prompt = clean(body.prompt, 100_000);
+  const logPath = path.join(logDir, `${id}.jsonl`);
+  const status = runStatus(body.status, "tracked");
+  const run = {
+    id,
+    status: status === "starting" || status === "running" ? "tracked" : status,
+    pid: null,
+    issueNumber,
+    issueUrl,
+    title: clean(body.title, 300),
+    queueId: clean(body.queueId, 80),
+    workspace,
+    logPath,
+    startedAt: now,
+    finishedAt: null,
+    exitCode: null,
+    signal: null,
+    error: null,
+    note: clean(body.note, 500) || "Manual track entry for copy/paste or external Codex work.",
+    source: clean(body.source, 80) || "manual",
+    updatedAt: now,
+  };
+  await writeRunLog(run, { type: "track", at: now, prompt });
+  runs.set(id, run);
+  persistRunsSoon();
+  return run;
+}
+
+async function writeRunLog(run, event) {
+  await fsp.mkdir(logDir, { recursive: true });
+  await fsp.appendFile(run.logPath, `${JSON.stringify(event)}\n`, "utf8");
 }
 
 function openLogStream(logPath) {
@@ -250,10 +349,150 @@ function markRunFailed(run, error) {
   run.status = "failed";
   run.error = error.message || String(error);
   run.finishedAt = new Date().toISOString();
+  run.updatedAt = run.finishedAt;
+  persistRunsSoon();
 }
 
 function activeRuns() {
-  return [...runs.values()].filter((run) => run.status === "starting" || run.status === "running");
+  return [...runs.values()].filter((run) => runIsLive(run));
+}
+
+function runIsLive(run) {
+  return !run?.finishedAt && (run?.status === "starting" || run?.status === "running");
+}
+
+function visibleRuns() {
+  return unarchivedRuns().slice(0, 50);
+}
+
+function unarchivedRuns() {
+  return [...runs.values()]
+    .filter((run) => !run.archivedAt)
+    .sort((left, right) => runSortTime(right) - runSortTime(left));
+}
+
+function visibleRunForIssue(issueNumber, issueUrl) {
+  const key = issueKey(issueNumber, issueUrl);
+  if (!key) return null;
+  return unarchivedRuns().find((run) => issueKey(run.issueNumber, run.issueUrl) === key) || null;
+}
+
+function issueKey(issueNumber, issueUrl) {
+  const normalized = integer(issueNumber, null);
+  let parsedIssueNumber = normalized;
+  try {
+    const url = new URL(String(issueUrl || ""));
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length >= 4 && parts[2] === "issues") {
+      const urlIssueNumber = integer(parts[3], null);
+      parsedIssueNumber = urlIssueNumber || parsedIssueNumber;
+      if (parsedIssueNumber) {
+        return `${url.hostname.toLowerCase()}/${parts[0].toLowerCase()}/${parts[1].toLowerCase()}#${parsedIssueNumber}`;
+      }
+    }
+  } catch {}
+  return parsedIssueNumber ? `#${parsedIssueNumber}` : "";
+}
+
+function runSortTime(run) {
+  const parsed = Date.parse(run?.updatedAt || run?.startedAt || "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function updateRunFromBody(run, body) {
+  const status = body.status === "archive" ? "archived" : runStatus(body.status, run.status);
+  if ((status === "starting" || status === "running") && status !== run.status) {
+    return {
+      error: "cannot set live status with PATCH",
+      status: 409,
+    };
+  }
+  if (runIsLive(run) && status !== run.status) {
+    return {
+      error: "cannot change status while Codex process is active",
+      status: 409,
+    };
+  }
+  const now = new Date().toISOString();
+  run.status = status;
+  run.updatedAt = now;
+  if (body.note !== undefined) run.note = clean(body.note, 500);
+  if (body.prUrl !== undefined) run.prUrl = clean(body.prUrl, 500);
+  if (status === "archived") run.archivedAt = now;
+  if ((status === "ready" || status === "parked" || status === "completed") && !run.finishedAt) {
+    run.finishedAt = now;
+  }
+  return null;
+}
+
+function runStatus(value, fallback) {
+  const status = clean(value, 40);
+  return [
+    "tracked",
+    "starting",
+    "running",
+    "completed",
+    "failed",
+    "dry-run",
+    "parked",
+    "ready",
+    "stale",
+    "archived",
+  ].includes(status)
+    ? status
+    : fallback;
+}
+
+async function loadPersistedRuns() {
+  let changed = false;
+  try {
+    const text = await fsp.readFile(statePath, "utf8");
+    const parsed = JSON.parse(text);
+    const now = new Date().toISOString();
+    for (const run of Array.isArray(parsed?.runs) ? parsed.runs : []) {
+      if (!run?.id) continue;
+      const restored = { ...run };
+      if (restored.status === "starting" || restored.status === "running") {
+        restored.status = "stale";
+        restored.error = restored.error || "Runner restarted before this Codex process finished.";
+        restored.finishedAt = restored.finishedAt || now;
+        restored.updatedAt = now;
+        changed = true;
+      }
+      runs.set(String(restored.id), restored);
+    }
+    if (changed) persistRunsSoon();
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      console.warn(`Could not load run state: ${error.message || String(error)}`);
+    }
+  }
+}
+
+function persistRunsSoon() {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    persistRuns().catch((error) => {
+      console.warn(`Could not persist run state: ${error.message || String(error)}`);
+    });
+  }, 25);
+}
+
+async function persistRuns() {
+  await fsp.mkdir(logDir, { recursive: true });
+  const persistedRuns = [...runs.values()]
+    .sort((left, right) => {
+      if (Boolean(left.archivedAt) !== Boolean(right.archivedAt)) {
+        return left.archivedAt ? 1 : -1;
+      }
+      return runSortTime(right) - runSortTime(left);
+    })
+    .slice(0, 200);
+  const payload = JSON.stringify({ version: 1, runs: persistedRuns }, null, 2);
+  const tempPath = `${statePath}.${process.pid}.tmp`;
+  await fsp.writeFile(tempPath, payload, "utf8");
+  await fsp.rename(tempPath, statePath);
 }
 
 async function readJson(request) {
@@ -288,7 +527,7 @@ function corsHeaders(request) {
   const origin = header(request, "origin");
   const headers = {
     "access-control-allow-headers": "authorization, content-type",
-    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
     "access-control-max-age": "600",
   };
   if (!origin || allowedOrigin(origin)) {
