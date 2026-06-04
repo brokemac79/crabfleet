@@ -2088,6 +2088,104 @@
         gap: 7px;
         white-space: nowrap;
       }
+      .active-work-mission {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(220px, 0.58fr) auto;
+        gap: 10px;
+        align-items: stretch;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: linear-gradient(135deg, rgb(94 106 210 / 0.12), transparent 44%), var(--panel);
+        padding: 12px;
+      }
+      .mission-focus,
+      .mission-stack {
+        min-width: 0;
+      }
+      .mission-focus {
+        display: grid;
+        align-content: center;
+        gap: 7px;
+      }
+      .mission-focus-head {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .mission-focus h3 {
+        margin: 0;
+        color: var(--ink);
+        font-size: 17px;
+        line-height: 1.25;
+      }
+      .mission-focus p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .mission-stack {
+        display: grid;
+        gap: 6px;
+      }
+      .mission-stack button {
+        display: grid;
+        grid-template-columns: 24px minmax(0, 1fr);
+        gap: 8px;
+        align-items: center;
+        justify-items: start;
+        min-height: 36px;
+        padding: 7px 9px;
+        border-color: var(--line);
+        background: var(--panel-2);
+        text-align: left;
+      }
+      .mission-stack button span:last-child {
+        min-width: 0;
+        display: flex;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .mission-stack strong {
+        color: var(--ink);
+      }
+      .mission-rank {
+        width: 22px;
+        height: 22px;
+        display: inline-grid;
+        place-items: center;
+        border: 1px solid var(--line-strong);
+        border-radius: 999px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 800;
+      }
+      .mission-rank.ok {
+        border-color: rgb(16 185 129 / 0.28);
+        color: var(--success);
+      }
+      .mission-rank.warn {
+        border-color: rgb(245 158 11 / 0.32);
+        color: var(--warning);
+      }
+      .mission-rank.danger {
+        border-color: rgb(239 68 68 / 0.34);
+        color: #f87171;
+      }
+      .mission-actions {
+        display: grid;
+        gap: 8px;
+        align-content: center;
+      }
+      .mission-actions button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        white-space: nowrap;
+      }
       .active-work-list {
         display: grid;
         gap: 8px;
@@ -2127,6 +2225,31 @@
       .active-work-next {
         color: var(--ink);
       }
+      .active-work-checklist {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+      .check-step {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--panel);
+        color: var(--muted);
+        padding: 3px 7px;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1.1;
+      }
+      .check-step.done {
+        border-color: rgb(16 185 129 / 0.28);
+        background: rgb(16 185 129 / 0.1);
+        color: var(--success);
+      }
+      .check-step.warn {
+        border-color: rgb(245 158 11 / 0.32);
+        background: rgb(245 158 11 / 0.08);
+        color: var(--warning);
+      }
       .active-work-detail {
         min-width: 0;
         display: grid;
@@ -2145,6 +2268,22 @@
         white-space: nowrap;
         font-size: 12px;
       }
+      .active-work-pr {
+        max-width: 100%;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        overflow: hidden;
+        border: 1px solid rgb(16 185 129 / 0.28);
+        border-radius: 999px;
+        background: rgb(16 185 129 / 0.1);
+        color: var(--success);
+        padding: 5px 8px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+        font-weight: 700;
+      }
       .active-work-actions {
         display: flex;
         flex-wrap: wrap;
@@ -2155,6 +2294,24 @@
         min-height: 30px;
         padding: 0 10px;
         font-size: 12px;
+      }
+      .active-work-pr-form {
+        width: min(100%, 420px);
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 6px;
+        align-items: center;
+      }
+      .active-work-pr-form input {
+        min-height: 32px;
+        padding: 7px 9px;
+        font-size: 12px;
+      }
+      .active-work-pr-form button {
+        min-height: 32px;
+        padding: 0 10px;
+        font-size: 12px;
+        white-space: nowrap;
       }
       .openclaw-grid {
         display: grid;
@@ -2359,6 +2516,14 @@
         .openclaw-runner {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
+        .active-work-mission {
+          grid-template-columns: minmax(0, 1fr) minmax(220px, 0.7fr);
+        }
+        .mission-actions {
+          grid-column: 1 / -1;
+          grid-template-columns: repeat(2, minmax(0, max-content));
+          justify-content: start;
+        }
         .openclaw-settings button,
         .runner-actions,
         .active-work-tools {
@@ -2452,6 +2617,14 @@
           grid-template-columns: 1fr;
           align-items: start;
         }
+        .active-work-mission,
+        .mission-actions {
+          grid-template-columns: 1fr;
+        }
+        .mission-stack button span:last-child {
+          flex-wrap: wrap;
+          white-space: normal;
+        }
         .active-work-tools {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
@@ -2486,6 +2659,10 @@
         }
         .active-work-actions button {
           flex: 1 1 auto;
+        }
+        .active-work-pr-form {
+          width: 100%;
+          grid-template-columns: 1fr;
         }
         .session-grid {
           grid-template-columns: 1fr;

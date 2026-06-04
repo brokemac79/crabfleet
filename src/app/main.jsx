@@ -1901,6 +1901,7 @@ function OpenClawRunnerPanel({ runner, preferences, onChange, onCheck }) {
 
 function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
   const runs = Array.isArray(runner?.runs) ? runner.runs : [];
+  const mission = openClawMissionControl(runs, runner);
   const activeCount = runs.filter((run) => openClawRunActive(run)).length;
   const maxActive = runner?.info?.maxActive || "-";
   const readyCount = runs.filter((run) => run?.status === "ready").length;
@@ -1908,6 +1909,7 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
   const inactiveRuns = runs.filter((run) => openClawRunInactive(run));
   const [busyRun, setBusyRun] = useState(null);
   const [actionError, setActionError] = useState("");
+  const [prEditor, setPrEditor] = useState({ runId: null, value: "" });
   async function update(run, patch) {
     setActionError("");
     setBusyRun(run.id);
@@ -1915,6 +1917,7 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
       await onUpdate(run, patch);
     } catch (error) {
       setActionError(error.message || "Could not update active work");
+      throw error;
     } finally {
       setBusyRun(null);
     }
@@ -1931,6 +1934,21 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
     } finally {
       setBusyRun(null);
     }
+  }
+  function editPr(run) {
+    setPrEditor({ runId: run.id, value: run?.prUrl || "" });
+  }
+  async function savePr(event, run) {
+    event.preventDefault();
+    const prUrl = openClawValidPrUrl(prEditor.value);
+    if (prEditor.value.trim() && !prUrl) {
+      setActionError("PR URL must be a https://github.com/owner/repo/pull/123 URL.");
+      return;
+    }
+    try {
+      await update(run, { prUrl });
+      setPrEditor({ runId: null, value: "" });
+    } catch {}
   }
   return (
     <section class="openclaw-active-work">
@@ -1973,9 +1991,55 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
       {actionError ? <div class="workflow-banner error">{actionError}</div> : null}
       {runner?.runsError ? <div class="workflow-banner error">{runner.runsError}</div> : null}
       {runs.length ? (
+        <section class="active-work-mission" aria-label="Active work command center">
+          <div class="mission-focus">
+            <div class="mission-focus-head">
+              <span class={`chip ${mission.tone}`}>{mission.label}</span>
+              <span class="chip">{mission.plateCount} plates</span>
+            </div>
+            <h3>{mission.headline}</h3>
+            <p>{mission.detail}</p>
+          </div>
+          {mission.items.length ? (
+            <div class="mission-stack">
+              {mission.items.map((item) => (
+                <button
+                  type="button"
+                  key={item.run.id}
+                  onClick={() => copyText(openClawRunResumePrompt(item.run))}
+                  title="Copy a Codex resume prompt for this plate"
+                >
+                  <span class={`mission-rank ${item.tone}`}>{item.rank}</span>
+                  <span>
+                    <strong>#{item.run.issueNumber || "?"}</strong>
+                    {item.label}
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div class="mission-actions">
+            <button type="button" onClick={() => copyText(openClawActiveWorkBrief(runs, runner))}>
+              <Icon name="clipboard-list" />
+              Copy work brief
+            </button>
+            <button
+              type="button"
+              disabled={!mission.focusRun}
+              onClick={() => copyText(openClawRunResumePrompt(mission.focusRun))}
+            >
+              <Icon name="message-square-text" />
+              Copy focus prompt
+            </button>
+          </div>
+        </section>
+      ) : null}
+      {runs.length ? (
         <div class="active-work-list">
           {runs.slice(0, 12).map((run) => {
             const isLive = openClawRunActive(run);
+            const checklist = openClawRunChecklist(run);
+            const prUrl = openClawValidPrUrl(run?.prUrl);
             return (
               <article class="active-work-row" key={run.id}>
                 <div class="active-work-main">
@@ -1989,12 +2053,40 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
                     {run.pid ? <span class="chip">pid {run.pid}</span> : null}
                     <span class="chip">{openClawRunWhen(run)}</span>
                   </div>
+                  <div class="active-work-checklist" aria-label="OpenClaw readiness checklist">
+                    {checklist.map((item) => (
+                      <span
+                        key={item.label}
+                        class={`check-step ${item.done ? "done" : item.tone || ""}`}
+                      >
+                        {item.label}
+                      </span>
+                    ))}
+                  </div>
                   <p class="active-work-next">{openClawRunNextAction(run)}</p>
                   {run.note ? <p class="active-work-note">{run.note}</p> : null}
                 </div>
                 <div class="active-work-detail">
+                  {prUrl ? (
+                    <a class="active-work-pr" href={prUrl} target="_blank" rel="noreferrer">
+                      <Icon name="git-pull-request" />
+                      PR linked
+                    </a>
+                  ) : null}
                   <code>{run.id}</code>
                   <div class="active-work-actions">
+                    <button onClick={() => copyText(openClawRunResumePrompt(run))}>
+                      <Icon name="message-square-text" />
+                      Resume
+                    </button>
+                    <button onClick={() => copyText(openClawRunHandoff(run))}>
+                      <Icon name="send" />
+                      Handoff
+                    </button>
+                    <button disabled={busyRun === run.id} onClick={() => editPr(run)}>
+                      <Icon name="git-pull-request" />
+                      {prUrl ? "Edit PR" : "Link PR"}
+                    </button>
                     <button onClick={() => copyText(openClawRunNote(run))}>Copy note</button>
                     {run.logPath ? (
                       <button onClick={() => copyText(run.logPath)}>Copy log</button>
@@ -2028,6 +2120,28 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
                       Archive
                     </button>
                   </div>
+                  {prEditor.runId === run.id ? (
+                    <form class="active-work-pr-form" onSubmit={(event) => savePr(event, run)}>
+                      <input
+                        aria-label={`PR URL for #${run.issueNumber || "?"}`}
+                        value={prEditor.value}
+                        placeholder="https://github.com/openclaw/openclaw/pull/123"
+                        onInput={(event) =>
+                          setPrEditor({ runId: run.id, value: event.currentTarget.value })
+                        }
+                      />
+                      <button type="submit" disabled={busyRun === run.id}>
+                        Save PR
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busyRun === run.id}
+                        onClick={() => setPrEditor({ runId: null, value: "" })}
+                      >
+                        Cancel
+                      </button>
+                    </form>
+                  ) : null}
                 </div>
               </article>
             );
@@ -2522,6 +2636,249 @@ function openClawRunNote(run) {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function openClawMissionControl(runs, runner) {
+  const allRows = Array.isArray(runs) ? runs.filter((run) => run && !run.archivedAt) : [];
+  const inactiveRows = allRows.filter((run) => openClawRunInactive(run));
+  const inactiveCount = inactiveRows.length;
+  const currentRows = allRows.filter((run) => !openClawRunInactive(run));
+  const plates = currentRows.length ? currentRows : inactiveRows.length <= 10 ? inactiveRows : [];
+  const sorted = [...plates].sort(
+    (left, right) => openClawRunAttentionScore(left) - openClawRunAttentionScore(right),
+  );
+  const focusRun = sorted[0] || null;
+  if (!focusRun) {
+    return {
+      focusRun: null,
+      plateCount: 0,
+      label: inactiveCount ? "cleanup" : "clear",
+      tone: inactiveCount ? "warn" : "ok",
+      headline: inactiveCount
+        ? `${inactiveCount} inactive runner rows are in history`
+        : "No OpenClaw plates are active",
+      detail: inactiveCount
+        ? "Archive inactive rows to clear old completed, stale, failed, or dry-run history before starting a new demo."
+        : "Start or track a queue item when you are ready to pick up work.",
+      items: [],
+    };
+  }
+  const runnerMode = runner?.info?.dryRun ? "Dry-run bridge" : "Local bridge";
+  return {
+    focusRun,
+    plateCount: plates.length,
+    label: openClawMissionLabel(focusRun),
+    tone: openClawRunTone(focusRun),
+    headline: `#${focusRun.issueNumber || "?"}: ${openClawMissionHeadline(focusRun)}`,
+    detail: `${runnerMode}. ${openClawRunNextAction(focusRun)}`,
+    items: sorted.slice(0, 3).map((run, index) => ({
+      run,
+      rank: index + 1,
+      label: openClawMissionLabel(run),
+      tone: openClawRunTone(run),
+    })),
+  };
+}
+
+function openClawRunAttentionScore(run) {
+  const statusOrder = {
+    ready: 0,
+    failed: 1,
+    stale: 2,
+    completed: 3,
+    "dry-run": 4,
+    parked: 5,
+    tracked: 6,
+    running: 7,
+    starting: 8,
+  };
+  return (statusOrder[run?.status] ?? 20) * 100 + openClawRunQueueScore(run);
+}
+
+function openClawRunQueueScore(run) {
+  const text = `${run?.queueId || ""} ${run?.title || ""}`.toLowerCase();
+  if (text.includes("p0")) return 0;
+  if (text.includes("p1")) return 10;
+  if (text.includes("p2")) return 20;
+  return 40;
+}
+
+function openClawMissionLabel(run) {
+  switch (run?.status) {
+    case "ready":
+      return "handoff ready";
+    case "failed":
+      return "needs repair";
+    case "stale":
+      return "verify session";
+    case "completed":
+      return "check proof";
+    case "dry-run":
+      return "dry-run only";
+    case "parked":
+      return "blocked";
+    case "tracked":
+      return "manual plate";
+    case "running":
+    case "starting":
+      return "Codex active";
+    default:
+      return "needs update";
+  }
+}
+
+function openClawMissionHeadline(run) {
+  switch (run?.status) {
+    case "ready":
+      return "copy the maintainer handoff";
+    case "failed":
+      return "repair the failed run or park it";
+    case "stale":
+      return "confirm whether the external Codex session is still alive";
+    case "completed":
+      return "turn the completed run into proof, PR state, and handoff";
+    case "dry-run":
+      return "restart the bridge live or paste the captured prompt";
+    case "parked":
+      return "blocked until the missing proof or decision lands";
+    case "tracked":
+      return "resume the manual Codex/tmux work";
+    case "running":
+    case "starting":
+      return "watch the active Codex run";
+    default:
+      return "update this plate";
+  }
+}
+
+function openClawRunChecklist(run) {
+  const text = openClawRunKnownText(run);
+  const ready = run?.status === "ready";
+  const live = openClawRunActive(run);
+  const proofKnown = ready || /\b(proof|tested|tests?|pnpm|mantis)\b/.test(text);
+  const reviewKnown = ready || /codex review|review passed|review clean/.test(text);
+  const prKnown = Boolean(openClawValidPrUrl(run?.prUrl));
+  const ciKnown = ready || /\bci\b|clawsweeper|ready for maintainer/.test(text);
+  return [
+    { label: "Intake", done: true },
+    { label: "Proof", done: proofKnown, tone: live ? "warn" : "" },
+    { label: "Review", done: reviewKnown },
+    { label: "PR", done: prKnown },
+    { label: "CI/ClawSweeper", done: ciKnown },
+  ];
+}
+
+function openClawRunKnownText(run) {
+  return [run?.status, run?.note, openClawValidPrUrl(run?.prUrl), run?.title, run?.queueId]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function openClawActiveWorkBrief(runs, runner) {
+  const allRows = Array.isArray(runs) ? runs.filter((run) => run && !run.archivedAt) : [];
+  const inactiveRows = allRows.filter((run) => openClawRunInactive(run));
+  const currentRows = allRows.filter((run) => !openClawRunInactive(run));
+  const plates = currentRows.length ? currentRows : inactiveRows.length <= 10 ? inactiveRows : [];
+  const inactiveCount = inactiveRows.length;
+  const mission = openClawMissionControl(plates, runner);
+  const activeCount = plates.filter((run) => openClawRunActive(run)).length;
+  const readyCount = plates.filter((run) => run?.status === "ready").length;
+  const parkedCount = plates.filter((run) => run?.status === "parked").length;
+  const maxActive = runner?.info?.maxActive || "-";
+  return [
+    "OpenClaw active work brief",
+    `Runner: ${runner?.status || "unknown"}${runner?.info?.dryRun ? " (dry-run)" : ""}`,
+    `Plates: ${plates.length}; active ${activeCount}/${maxActive}; ready ${readyCount}; parked ${parkedCount}; inactive history ${inactiveCount}`,
+    mission.focusRun
+      ? `Focus: #${mission.focusRun.issueNumber || "?"} ${mission.focusRun.title || "OpenClaw issue"} - ${mission.label}`
+      : "Focus: no active plates",
+    "",
+    ...plates
+      .sort((left, right) => openClawRunAttentionScore(left) - openClawRunAttentionScore(right))
+      .map(openClawRunBriefLines)
+      .flat(),
+  ]
+    .filter((line, index, all) => line || all[index - 1])
+    .join("\n");
+}
+
+function openClawRunBriefLines(run) {
+  const prUrl = openClawValidPrUrl(run?.prUrl);
+  return [
+    `- #${run?.issueNumber || "?"} [${openClawRunLabel(run)}] ${run?.title || "OpenClaw issue"}`,
+    run?.issueUrl ? `  Issue: ${run.issueUrl}` : "",
+    prUrl ? `  PR: ${prUrl}` : "  PR: not linked in Claw Queue yet",
+    `  Next: ${openClawRunNextAction(run)}`,
+    run?.note ? `  Note: ${run.note}` : "",
+    "",
+  ].filter(Boolean);
+}
+
+function openClawRunResumePrompt(run) {
+  const prUrl = openClawValidPrUrl(run?.prUrl);
+  return [
+    `Resume this OpenClaw work item from Claw Queue: ${run?.issueUrl || `#${run?.issueNumber || "?"}`}`,
+    "",
+    `Title: ${run?.title || "OpenClaw issue"}`,
+    `Issue number: #${run?.issueNumber || "?"}`,
+    run?.queueId ? `Queue: ${run.queueId}` : "",
+    `Current Claw Queue status: ${openClawRunLabel(run)}`,
+    prUrl ? `Known PR: ${prUrl}` : "Known PR: not linked in Claw Queue yet",
+    run?.logPath ? `Runner log: ${run.logPath}` : "",
+    run?.note ? `Current note: ${run.note}` : "",
+    "",
+    "Resume process:",
+    "1. Re-check the issue and any linked/open PRs on GitHub before changing code.",
+    "2. Read the latest local OpenClaw AGENTS.md, CONTRIBUTING.md, and pull request template before continuing.",
+    "3. Continue from the smallest safe fix shape, following ClawSweeper's assessment and route.",
+    "4. Add or refresh proof: reproduction, focused tests, before/after evidence, and Mantis only if available and relevant.",
+    "5. Run the appropriate Codex review before opening or updating the PR, normally: codex review --base origin/main.",
+    "6. Update or open the PR only when proof, tests, Codex review, and PR body are ready for maintainer review.",
+    "7. Monitor CI and ClawSweeper after updates. Fix failures, explain non-actionable failures, or park if proof is insufficient and Mantis is unavailable.",
+    "",
+    "When finished, return a Discord-ready maintainer handoff with PR link, issue link, one-line summary, proof/tests, Codex review result, CI state, and ClawSweeper readiness.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function openClawRunHandoff(run) {
+  const prUrl = openClawValidPrUrl(run?.prUrl);
+  return [
+    `Maintainer review requested: #${run?.issueNumber || "?"} ${run?.title || "OpenClaw issue"}`,
+    prUrl ? `PR: ${prUrl}` : "PR: add PR link",
+    run?.issueUrl ? `Issue: ${run.issueUrl}` : "",
+    "Summary: Focused OpenClaw fix is ready for maintainer review.",
+    "Proof: add local tests/proof and Mantis evidence if available.",
+    `State: ${openClawRunLabel(run)}; codex review result needed; CI/ClawSweeper readiness needed.`,
+    run?.note ? `Note: ${run.note}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function openClawValidPrUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  try {
+    const url = new URL(text);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const pullNumber = Number(parts[3]);
+    if (
+      url.protocol === "https:" &&
+      url.hostname.toLowerCase() === "github.com" &&
+      parts.length === 4 &&
+      parts[2] === "pull" &&
+      Number.isInteger(pullNumber) &&
+      pullNumber > 0
+    ) {
+      url.hash = "";
+      url.search = "";
+      return url.toString();
+    }
+  } catch {}
+  return "";
 }
 
 function nullableFormNumber(value) {
