@@ -5,6 +5,7 @@ import {
   buildOpenClawIssuePrompt,
   buildOpenClawIssueSearchQuery,
   evaluateOpenClawGovernor,
+  openClawCandidateMatchesQueue,
   normalizeOpenClawPreferences,
   openClawCandidatePriorityLabel,
   openClawCandidatePriorityRank,
@@ -113,6 +114,40 @@ test("candidate priority ranking keeps maintainer priority ahead of overlapping 
     openClawCandidatePriorityRank(p1Candidate) < openClawCandidatePriorityRank(clearShapeCandidate),
     true,
   );
+});
+
+test("candidate queue matching can reuse broader queue data for partial lookup failures", () => {
+  const queues = queuesForOpenClawRole("trial_maintainer");
+  const p2Queue = queues.find((queue) => queue.id === "maintainer-p2");
+  const sourceQueue = queues.find((queue) => queue.id === "contributor-source-repro");
+  assert.ok(p2Queue);
+  assert.ok(sourceQueue);
+
+  const p2Candidate = {
+    labels: ["P2", "clawsweeper:queueable-fix"],
+    signals: openClawIssueSignals(["P2", "clawsweeper:queueable-fix"], "2026-06-02T12:00:00Z", now),
+  };
+  const sourceCandidate = {
+    labels: ["clawsweeper:queueable-fix", "clawsweeper:source-repro"],
+    signals: openClawIssueSignals(
+      ["clawsweeper:queueable-fix", "clawsweeper:source-repro"],
+      "2026-06-02T12:00:00Z",
+      now,
+    ),
+  };
+  const blockedCandidate = {
+    labels: ["P2", "clawsweeper:queueable-fix", "clawsweeper:no-new-fix-pr"],
+    signals: openClawIssueSignals(
+      ["P2", "clawsweeper:queueable-fix", "clawsweeper:no-new-fix-pr"],
+      "2026-06-02T12:00:00Z",
+      now,
+    ),
+  };
+
+  assert.equal(openClawCandidateMatchesQueue(p2Candidate, p2Queue), true);
+  assert.equal(openClawCandidateMatchesQueue(sourceCandidate, sourceQueue), true);
+  assert.equal(openClawCandidateMatchesQueue(blockedCandidate, p2Queue), false);
+  assert.equal(openClawCandidateMatchesQueue(sourceCandidate, p2Queue), false);
 });
 
 test("governor pauses new work at personal PR and usage limits", () => {

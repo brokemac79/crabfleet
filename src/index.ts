@@ -45,6 +45,8 @@ import {
   evaluateOpenClawGovernor,
   normalizeGitHubRepo,
   normalizeOpenClawPreferences,
+  openClawCandidateMatchesQueue,
+  openClawCandidatePriorityRank,
   openClawDefaultPreferences,
   openClawDefaultRepo,
   openClawIssueSignals,
@@ -747,6 +749,7 @@ type CompilableQuery = {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const terminalInputStates = new Map<string, TerminalInputState>();
+const githubSearchCache = new Map<string, { expiresAt: number; payload: unknown }>();
 const sessionCookie = "crabbox_session";
 const oauthStateCookie = "crabbox_oauth_state";
 const sshLinkCookie = "crabbox_ssh_link";
@@ -754,6 +757,8 @@ const bootstrapSessionSeconds = 60 * 60;
 const githubSessionSeconds = 60 * 15;
 const sshLinkSeconds = 5 * 60;
 const terminalClipboardMaxBytes = 10 * 1024 * 1024;
+const githubSearchCacheTtlMs = 60 * 1000;
+const githubSearchCacheMaxEntries = 100;
 const lanes = ["Todo", "Running", "Human Review", "Done"];
 const preferredRepo = "openclaw/crabfleet";
 const appCanonicalHost = "clawfleet.openclaw.ai";
@@ -2395,7 +2400,7 @@ async function readOpenClawWorkflow(
   );
   const token = await openClawWorkflowGitHubToken(request, env, repo);
   const queues = queuesForOpenClawRole(effectivePreferences.roleMode);
-  const [queueResults, pullRequests] = await Promise.all([
+  const [rawQueueResults, pullRequests] = await Promise.all([
     Promise.all(
       queues.map((queue) =>
         fetchOpenClawQueue(env, token, repo, queue, effectivePreferences.minimumIssueAgeHours),
@@ -2405,6 +2410,7 @@ async function readOpenClawWorkflow(
       ? fetchOpenClawPullRequests(env, token, repo, githubLogin)
       : Promise.resolve({ items: [], error: "GitHub login is not configured" }),
   ]);
+  const queueResults = hydrateOpenClawPartialQueueResults(rawQueueResults);
   const baseGovernor = evaluateOpenClawGovernor(effectivePreferences, pullRequests.items.length);
   const governor = pullRequests.error
     ? {
@@ -2606,6 +2612,47 @@ async function fetchOpenClawQueue(
   }
 }
 
+function hydrateOpenClawPartialQueueResults(results: OpenClawQueueResult[]): OpenClawQueueResult[] {
+  const available = uniqueOpenClawCandidates(
+    results.flatMap((result) => (result.error ? [] : result.candidates)),
+  );
+  if (!available.length) return results;
+
+  return results.map((result) => {
+    if (!result.error || result.candidates.length) return result;
+    const candidates = available
+      .filter((candidate) => openClawCandidateMatchesQueue(candidate, result.definition))
+      .map((candidate) => {
+        const hydrated = { ...candidate, queueId: result.definition.id };
+        return { ...hydrated, workPrompt: buildOpenClawIssuePrompt(hydrated) };
+      })
+      .sort(
+        (left, right) =>
+          openClawCandidatePriorityRank(left, result.definition) -
+            openClawCandidatePriorityRank(right, result.definition) || left.number - right.number,
+      )
+      .slice(0, 6);
+    if (!candidates.length) return result;
+    return {
+      ...result,
+      totalCount: Math.max(result.totalCount, candidates.length),
+      candidates,
+      error: `${result.error}; showing cached matches from successful queue data.`,
+    };
+  });
+}
+
+function uniqueOpenClawCandidates(candidates: OpenClawCandidate[]): OpenClawCandidate[] {
+  const seen = new Set<number>();
+  const unique: OpenClawCandidate[] = [];
+  for (const candidate of candidates) {
+    if (seen.has(candidate.number)) continue;
+    seen.add(candidate.number);
+    unique.push(candidate);
+  }
+  return unique;
+}
+
 async function fetchOpenClawPullRequests(
   env: RuntimeEnv,
   token: string | undefined,
@@ -2793,6 +2840,38 @@ async function githubSearchIssues<T>(
   perPage: number,
   page = 1,
 ): Promise<GitHubSearchPayload<T>> {
+  const path = githubSearchIssuesPath(query, sort, order, perPage, page);
+  try {
+    const cached = await readGitHubSearchCache<T>(token, path);
+    if (cached) return cached;
+    const payload = await githubApi<GitHubSearchPayload<T>>(token, path);
+    await writeGitHubSearchCache(token, path, payload);
+    return payload;
+  } catch (error) {
+    if (!(error instanceof GitHubApiError) || error.status !== 422 || !query.includes("-linked:pr"))
+      throw error;
+    const retryPath = githubSearchIssuesPath(
+      query.replace(" -linked:pr", ""),
+      sort,
+      order,
+      perPage,
+      page,
+    );
+    const cached = await readGitHubSearchCache<T>(token, retryPath);
+    if (cached) return cached;
+    const payload = await githubApi<GitHubSearchPayload<T>>(token, retryPath);
+    await writeGitHubSearchCache(token, retryPath, payload);
+    return payload;
+  }
+}
+
+function githubSearchIssuesPath(
+  query: string,
+  sort: "created" | "updated",
+  order: "asc" | "desc",
+  perPage: number,
+  page: number,
+): string {
   const params = new URLSearchParams({
     q: query,
     sort,
@@ -2800,21 +2879,41 @@ async function githubSearchIssues<T>(
     per_page: String(perPage),
     page: String(page),
   });
-  const path = `/search/issues?${params.toString()}`;
-  try {
-    return await githubApi<GitHubSearchPayload<T>>(token, path);
-  } catch (error) {
-    if (!(error instanceof GitHubApiError) || error.status !== 422 || !query.includes("-linked:pr"))
-      throw error;
-    const retryParams = new URLSearchParams({
-      q: query.replace(" -linked:pr", ""),
-      sort,
-      order,
-      per_page: String(perPage),
-      page: String(page),
-    });
-    return githubApi<GitHubSearchPayload<T>>(token, `/search/issues?${retryParams.toString()}`);
+  return `/search/issues?${params.toString()}`;
+}
+
+async function readGitHubSearchCache<T>(
+  token: string | undefined,
+  path: string,
+): Promise<GitHubSearchPayload<T> | null> {
+  const key = await githubSearchCacheKey(token, path);
+  const cached = githubSearchCache.get(key);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    githubSearchCache.delete(key);
+    return null;
   }
+  return cached.payload as GitHubSearchPayload<T>;
+}
+
+async function writeGitHubSearchCache<T>(
+  token: string | undefined,
+  path: string,
+  payload: GitHubSearchPayload<T>,
+): Promise<void> {
+  if (githubSearchCache.size >= githubSearchCacheMaxEntries) {
+    const oldest = githubSearchCache.keys().next().value;
+    if (oldest) githubSearchCache.delete(oldest);
+  }
+  githubSearchCache.set(await githubSearchCacheKey(token, path), {
+    expiresAt: Date.now() + githubSearchCacheTtlMs,
+    payload,
+  });
+}
+
+async function githubSearchCacheKey(token: string | undefined, path: string): Promise<string> {
+  const authScope = token ? `token:${(await sha256(token)).slice(0, 16)}` : "anonymous";
+  return `${authScope}:${path}`;
 }
 
 async function githubApi<T>(token: string | undefined, path: string): Promise<T> {

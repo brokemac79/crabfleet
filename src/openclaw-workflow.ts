@@ -307,6 +307,21 @@ export function openClawPrSignals(labels: string[]): OpenClawPrSignals {
   };
 }
 
+export function openClawCandidateMatchesQueue(
+  candidate: Pick<OpenClawCandidate, "labels" | "signals">,
+  queue: Pick<OpenClawQueueDefinition, "labels" | "excludeLabels">,
+): boolean {
+  const labels = candidate.labels.map((label) => label.toLowerCase());
+  const has = (label: string) => labels.includes(label.toLowerCase());
+  return (
+    queue.labels.every(has) &&
+    !queue.excludeLabels.some(has) &&
+    candidate.signals.ageGate !== "too-old" &&
+    !candidate.signals.linkedPr &&
+    !candidate.signals.noNewFixPr
+  );
+}
+
 export function evaluateOpenClawGovernor(
   preferences: OpenClawWorkflowPreferences,
   openPrCount: number,

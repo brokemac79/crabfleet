@@ -2022,6 +2022,7 @@ function OpenClawCommandCenter({
                 runner?.status !== "connected" ||
                 !canStartWork ||
                 !candidate.signals.readyForPickup ||
+                openClawRunnerStartCapacityReached(runner) ||
                 runner?.startingIssue === candidate.number
               }
               onClick={() => onStartCodex(candidate)}
@@ -2125,6 +2126,7 @@ function OpenClawWorkerRunway({
           </button>
         </div>
       </header>
+      {runway.bridgeWarning ? <div class="workflow-banner">{runway.bridgeWarning}</div> : null}
       <div class="worker-lanes">
         {runway.lanes.map((lane) => (
           <OpenClawWorkerLane
@@ -2227,6 +2229,7 @@ function OpenClawWorkerLane({
                 runner?.status !== "connected" ||
                 !canStartWork ||
                 !lane.candidate.signals.readyForPickup ||
+                openClawRunnerStartCapacityReached(runner) ||
                 runner?.startingIssue === lane.candidate.number
               }
               onClick={() => onStartCodex(lane.candidate)}
@@ -2261,7 +2264,7 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
   const runs = Array.isArray(runner?.runs) ? runner.runs : [];
   const mission = openClawMissionControl(runs, runner);
   const readinessRadar = openClawReadinessRadar(runs);
-  const activeCount = runs.filter((run) => openClawRunActive(run)).length;
+  const activeCount = runs.filter((run) => openClawRunOpenPlate(run)).length;
   const maxActive = runner?.info?.maxActive || "-";
   const readyCount = runs.filter((run) => run?.status === "ready").length;
   const parkedCount = runs.filter((run) => run?.status === "parked").length;
@@ -2603,6 +2606,7 @@ function OpenClawQueue({
                       issueInWork ||
                       !canStartWork ||
                       !candidate.signals.readyForPickup ||
+                      openClawRunnerStartCapacityReached(runner) ||
                       runner?.startingIssue === candidate.number
                     }
                     onClick={() => onStartCodex(candidate)}
@@ -2661,15 +2665,22 @@ function OpenClawPullRequests({ pullRequests, error, handoffText, onHandoff }) {
                 #{pr.number} {pr.title}
               </a>
               <div class="candidate-meta">
-                <span class={`chip ${pr.signals.readyForMaintainer ? "ok" : "warn"}`}>
-                  {pr.signals.statusLabel ||
-                    (pr.signals.readyForMaintainer ? "ready" : "needs action")}
+                <span class={`chip ${openClawPrStatusTone(pr.signals)}`}>
+                  {openClawPrStatusLabel(pr.signals)}
                 </span>
                 <span
                   class={`chip ${pr.checks.state === "green" ? "ok" : pr.checks.state === "failing" ? "danger" : "warn"}`}
                 >
                   CI {pr.checks.state}
                 </span>
+                {pr.signals.mergeReady ? <span class="chip ok">merge ready</span> : null}
+                {pr.signals.clawsweeperHumanReview ? (
+                  <span class="chip warn">human review</span>
+                ) : null}
+                {pr.signals.needsProof ? <span class="chip danger">needs proof</span> : null}
+                {pr.signals.waitingOnAuthor ? (
+                  <span class="chip warn">waiting on author</span>
+                ) : null}
                 {pr.signals.proofSufficient ? <span class="chip ok">proof sufficient</span> : null}
                 {pr.checks.mantis ? <span class="chip">Mantis {pr.checks.mantis}</span> : null}
               </div>
@@ -2691,11 +2702,7 @@ function OpenClawPullRequests({ pullRequests, error, handoffText, onHandoff }) {
                         ? "ClawSweeper marked proof sufficient; local validation and Codex review completed."
                         : "Local validation and Codex review completed.",
                       ci: `CI ${pr.checks.state}`,
-                      clawsweeper:
-                        pr.signals.statusLabel ||
-                        (pr.signals.readyForMaintainer
-                          ? "Ready for maintainer look"
-                          : "Review latest ClawSweeper state"),
+                      clawsweeper: openClawPrStatusLabel(pr.signals),
                     });
                     await copyText(text);
                   } finally {
@@ -2722,6 +2729,22 @@ function OpenClawPullRequests({ pullRequests, error, handoffText, onHandoff }) {
       </button>
     </section>
   );
+}
+
+function openClawPrStatusLabel(signals) {
+  if (signals?.statusLabel) return signals.statusLabel;
+  if (signals?.readyForMaintainer || signals?.mergeReady) return "ready";
+  if (signals?.clawsweeperHumanReview) return "human review";
+  if (signals?.needsProof) return "needs proof";
+  if (signals?.waitingOnAuthor) return "waiting on author";
+  if (signals?.reReviewLoop) return "re-review loop";
+  return "needs action";
+}
+
+function openClawPrStatusTone(signals) {
+  if (signals?.readyForMaintainer || signals?.mergeReady) return "ok";
+  if (signals?.needsProof) return "danger";
+  return "warn";
 }
 
 function LabelText({ text, help }) {
@@ -2774,6 +2797,9 @@ function openClawStartDisabledReason(candidate, canStartWork, runner) {
   }
   if (!candidate?.signals?.readyForPickup) {
     return "This issue is not ready for pickup under the current ClawSweeper labels.";
+  }
+  if (openClawRunnerStartCapacityReached(runner)) {
+    return "The local Codex bridge is already at its --max-active limit.";
   }
   if (runner?.startingIssue === candidate?.number) return "Starting local Codex work.";
   return "Start local Codex with this issue prompt.";
@@ -2937,6 +2963,29 @@ function openClawRunnerCommand(runner, preferences) {
 
 function openClawRunActive(run) {
   return run?.status === "starting" || run?.status === "running";
+}
+
+function openClawRunOpenPlate(run) {
+  return (
+    run &&
+    !run.archivedAt &&
+    !openClawRunInactive(run) &&
+    run.status !== "ready" &&
+    run.status !== "parked"
+  );
+}
+
+function openClawRunnerStartCapacityReached(runner) {
+  if (runner?.status !== "connected") return false;
+  const maxActive = Number(runner?.info?.maxActive || 0) || 0;
+  if (maxActive <= 0) return false;
+  const reportedActive = Number(runner?.info?.active || 0) || 0;
+  const visibleLiveRuns = Array.isArray(runner?.runs)
+    ? runner.runs.filter(
+        (run) => run && !run.finishedAt && ["starting", "running"].includes(run.status),
+      ).length
+    : 0;
+  return Math.max(reportedActive, visibleLiveRuns) >= maxActive;
 }
 
 function openClawRunInactive(run) {
@@ -3148,6 +3197,8 @@ function openClawWorkerRunway(queues, runner, preferences) {
     1,
     Math.min(8, Number(preferences?.maxParallelWorkers || runner?.info?.maxActive || 1) || 1),
   );
+  const bridgeMaxActive =
+    runner?.status === "connected" ? Number(runner?.info?.maxActive || 0) || null : null;
   const runs = Array.isArray(runner?.runs) ? runner.runs : [];
   const plates = runs
     .filter((run) => run && !run.archivedAt && !openClawRunInactive(run))
@@ -3183,6 +3234,11 @@ function openClawWorkerRunway(queues, runner, preferences) {
     filled,
     empty,
     lanes,
+    bridgeMaxActive,
+    bridgeWarning:
+      bridgeMaxActive && bridgeMaxActive < preferredCapacity
+        ? `Local bridge can start ${bridgeMaxActive} Codex ${bridgeMaxActive === 1 ? "job" : "jobs"} right now. Restart it with the Runner command to use the ${preferredCapacity}-worker preference.`
+        : "",
     summary: openClawRunwaySummary(filled, empty, preferredCapacity, capacity),
   };
 }
