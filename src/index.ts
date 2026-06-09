@@ -43,6 +43,7 @@ import {
   buildOpenClawIssuePrompt,
   buildOpenClawIssueSearchQuery,
   evaluateOpenClawGovernor,
+  normalizeGitHubLogin,
   normalizeGitHubRepo,
   normalizeOpenClawPreferences,
   openClawCandidateMatchesQueue,
@@ -52,10 +53,15 @@ import {
   openClawIssueSignals,
   openClawMaximumIssueAgeMs,
   openClawPrSignals,
+  summarizeOpenClawChecks,
   queuesForOpenClawRole,
+  unknownOpenClawCheckSummary,
   type OpenClawCandidate,
+  type OpenClawCheckSummary,
   type OpenClawGovernor,
+  type OpenClawPrCoverage,
   type OpenClawQueueDefinition,
+  type OpenClawReasoningEffort,
   type OpenClawRoleMode,
   type OpenClawWorkflowPreferences,
 } from "./openclaw-workflow";
@@ -86,6 +92,7 @@ type RuntimeEnv = Env & {
   GITHUB_CLIENT_SECRET?: string;
   GITHUB_TOKEN?: string;
   GITHUB_ORG?: string;
+  CRABFLEET_DEV_IDENTITY?: string;
   CRABBOX_INTERACTIVE_PROVISION_URL?: string;
   CRABBOX_INTERACTIVE_PROVISION_TOKEN?: string;
   CRABBOX_RUNTIME_PROVISION_URL?: string;
@@ -206,6 +213,7 @@ type GitHubPullRequestPayload = {
   title: string;
   html_url: string;
   state: string;
+  body?: string | null;
   user: { login: string } | null;
   labels?: Array<GitHubLabelPayload | string>;
   head: { sha: string; ref: string; repo: { full_name: string } | null };
@@ -220,6 +228,7 @@ type GitHubCheckRunPayload = {
   status: string;
   conclusion: string | null;
   html_url: string | null;
+  created_at?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
 };
@@ -664,6 +673,7 @@ type OpenClawWorkflowPreferenceTable = {
   daily_usage_drop_limit: number;
   max_parallel_workers: number;
   minimum_issue_age_hours: number;
+  codex_reasoning_effort: OpenClawReasoningEffort;
   weekly_remaining_baseline: number | null;
   weekly_remaining_current: number | null;
   usage_window_started_at: number | null;
@@ -1275,6 +1285,8 @@ export default {
         url.pathname === "/app/board/" ||
         url.pathname === "/app/claw-queue" ||
         url.pathname === "/app/claw-queue/" ||
+        url.pathname === "/app/claw-loop" ||
+        url.pathname === "/app/claw-loop/" ||
         url.pathname === "/app/openclaw" ||
         url.pathname === "/app/openclaw/" ||
         url.pathname === "/sessions" ||
@@ -1453,6 +1465,11 @@ async function api(request: Request, env: RuntimeEnv): Promise<Response> {
   if (request.method === "GET" && url.pathname === "/api/openclaw/workflow") {
     requireRole(user, "viewer");
     return json(await readOpenClawWorkflow(request, env, user));
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/openclaw/issue") {
+    requireRole(user, "viewer");
+    return json(await readOpenClawIssue(request, env, user));
   }
 
   if (request.method === "PUT" && url.pathname === "/api/openclaw/preferences") {
@@ -1681,7 +1698,7 @@ async function tokenLogin(request: Request, env: RuntimeEnv): Promise<Response> 
 }
 
 async function devIdentityLogin(request: Request, env: RuntimeEnv): Promise<Response> {
-  if (!isLocalDevRequest(request)) return json({ error: "not found" }, { status: 404 });
+  if (!devIdentityEnabled(env, request)) return json({ error: "not found" }, { status: 404 });
 
   const body = await readJson<{ id?: string; name?: string; role?: string }>(request);
   const id = devIdentityId(body.id);
@@ -1974,7 +1991,7 @@ async function requireUser(request: Request, env: RuntimeEnv): Promise<User> {
   }
 
   if (user.subject.startsWith("dev:")) {
-    if (!isLocalDevRequest(request)) {
+    if (!devIdentityEnabled(env, request)) {
       await db.deleteFrom("sessions").where("token_hash", "=", tokenHash).execute();
       throw unauthorized();
     }
@@ -2359,15 +2376,6 @@ type OpenClawQueueResult = {
   error: string | null;
 };
 
-type OpenClawCheckSummary = {
-  state: "unknown" | "green" | "pending" | "failing";
-  total: number;
-  failing: string[];
-  pending: string[];
-  timedOut: string[];
-  mantis: string | null;
-};
-
 type OpenClawPullRequestSummary = {
   number: number;
   title: string;
@@ -2395,7 +2403,10 @@ async function readOpenClawWorkflow(
     normalizeGitHubRepo(preferences.targetRepo) ||
     envRepo;
   const githubLogin =
-    clean(url.searchParams.get("login"), 80) || preferences.githubLogin || user.login || null;
+    normalizeGitHubLogin(url.searchParams.get("login")) ||
+    preferences.githubLogin ||
+    normalizeGitHubLogin(user.login) ||
+    null;
   const effectivePreferences = normalizeOpenClawPreferences(
     { ...preferences, targetRepo: repo, githubLogin },
     preferences,
@@ -2405,20 +2416,51 @@ async function readOpenClawWorkflow(
   const [rawQueueResults, pullRequests] = await Promise.all([
     Promise.all(
       queues.map((queue) =>
-        fetchOpenClawQueue(env, token, repo, queue, effectivePreferences.minimumIssueAgeHours),
+        fetchOpenClawQueue(
+          env,
+          token,
+          repo,
+          queue,
+          effectivePreferences.minimumIssueAgeHours,
+          effectivePreferences.codexReasoningEffort,
+        ),
       ),
     ),
     githubLogin
       ? fetchOpenClawPullRequests(env, token, repo, githubLogin)
       : Promise.resolve({ items: [], error: "GitHub login is not configured" }),
   ]);
-  const queueResults = hydrateOpenClawPartialQueueResults(rawQueueResults);
+  const coverage = await fetchOpenClawPrCoverageForQueues(token, repo, rawQueueResults).catch(
+    (error) => ({
+      map: new Map<number, OpenClawPrCoverage[]>(),
+      error: `Possible PR coverage lookup failed: ${errorMessage(error)}`,
+    }),
+  );
+  const queueResults = hydrateOpenClawPartialQueueResults(
+    attachOpenClawPrCoverage(
+      rawQueueResults,
+      coverage.map,
+      effectivePreferences.codexReasoningEffort,
+      coverage.error,
+    ),
+    effectivePreferences.codexReasoningEffort,
+  ).map((result) =>
+    coverage.error
+      ? {
+          ...result,
+          error: result.error ? `${result.error}; ${coverage.error}` : coverage.error,
+        }
+      : result,
+  );
   const baseGovernor = evaluateOpenClawGovernor(effectivePreferences, pullRequests.items.length);
-  const governor = pullRequests.error
+  const governorErrors = [
+    pullRequests.error ? `Open PR lookup failed: ${pullRequests.error}` : "",
+  ].filter(Boolean);
+  const governor = governorErrors.length
     ? {
         ...baseGovernor,
         canStartNewWork: false,
-        reasons: [...baseGovernor.reasons, `Open PR lookup failed: ${pullRequests.error}`],
+        reasons: [...baseGovernor.reasons, ...governorErrors],
       }
     : baseGovernor;
   return {
@@ -2438,6 +2480,101 @@ async function readOpenClawWorkflow(
       trialMaintainerGuard: "Do not merge, land, squash, or enable automerge.",
     },
   };
+}
+
+async function readOpenClawIssue(
+  request: Request,
+  env: RuntimeEnv,
+  user: User,
+): Promise<Record<string, unknown>> {
+  const url = new URL(request.url);
+  const preferences = await readOpenClawWorkflowPreferences(env, user);
+  const envRepo = normalizeGitHubRepo(env.OPENCLAW_WORKFLOW_REPO) || openClawDefaultRepo;
+  const fallbackRepo =
+    normalizeGitHubRepo(url.searchParams.get("repo")) ||
+    normalizeGitHubRepo(preferences.targetRepo) ||
+    envRepo;
+  const target = parseOpenClawIssueInput(url.searchParams.get("input"), fallbackRepo);
+  const effectivePreferences = normalizeOpenClawPreferences(
+    { ...preferences, targetRepo: target.repo },
+    preferences,
+  );
+  const token = await openClawWorkflowGitHubToken(request, env, target.repo);
+  const issue = await githubApi<GitHubSearchIssueItem>(
+    token,
+    `/repos/${target.repo}/issues/${target.number}`,
+  );
+  if (issue.pull_request) throw badRequest("paste an issue URL or number, not a pull request");
+  if (issue.state !== "open") throw badRequest(`issue #${issue.number} is ${issue.state}`);
+  const candidate = openClawCandidateFromSearchItem(
+    issue,
+    "specific-issue",
+    Date.now(),
+    effectivePreferences.minimumIssueAgeHours,
+    effectivePreferences.codexReasoningEffort,
+  );
+  const coverage = await fetchOpenClawPrCoverageForCandidates(token, target.repo, [
+    candidate,
+  ]).catch((error) => ({
+    map: new Map<number, OpenClawPrCoverage[]>(),
+    error: `Possible PR coverage lookup failed: ${errorMessage(error)}`,
+  }));
+  const withCoverage = {
+    ...candidate,
+    possiblePrCoverage: coverage.map.get(candidate.number) ?? [],
+    prCoverageUnknown: openClawPrCoverageErrorBlocksPickup(coverage.error),
+    prCoverageWarning: coverage.error,
+  };
+  return {
+    repo: target.repo,
+    issueNumber: target.number,
+    candidate: {
+      ...withCoverage,
+      workPrompt: buildOpenClawIssuePrompt(withCoverage, {
+        codexReasoningEffort: effectivePreferences.codexReasoningEffort,
+      }),
+    },
+    coverageError: coverage.error,
+  };
+}
+
+function parseOpenClawIssueInput(
+  value: string | null,
+  fallbackRepo: string,
+): { repo: string; number: number } {
+  const text = clean(value, 500).trim();
+  if (!text) throw badRequest("issue URL or number is required");
+  const fallback = normalizeGitHubRepo(fallbackRepo) || openClawDefaultRepo;
+  const githubPath = text.match(
+    /^(?:https?:\/\/)?(?:www\.)?github\.com\/([a-z0-9_.-]+)\/([a-z0-9_.-]+)\/issues\/(\d+)(?:[/?#].*)?$/i,
+  );
+  if (githubPath) {
+    return {
+      repo: normalizeGitHubRepo(`${githubPath[1]}/${githubPath[2]}`) || fallback,
+      number: Number(githubPath[3]),
+    };
+  }
+  try {
+    const url = new URL(text);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const number = Number(parts[3]);
+    if (
+      url.hostname.toLowerCase() === "github.com" &&
+      parts.length >= 4 &&
+      parts[2] === "issues" &&
+      Number.isInteger(number) &&
+      number > 0
+    ) {
+      return {
+        repo: normalizeGitHubRepo(`${parts[0]}/${parts[1]}`) || fallback,
+        number,
+      };
+    }
+  } catch {}
+  const match = text.match(/^(?:#)?(\d+)$/);
+  const number = match ? Number(match[1]) : NaN;
+  if (Number.isInteger(number) && number > 0) return { repo: fallback, number };
+  throw badRequest("issue must be a GitHub issue URL, #number, or number");
 }
 
 async function openClawWorkflowGitHubToken(
@@ -2468,7 +2605,40 @@ async function updateOpenClawPreferences(
 ): Promise<{ preferences: OpenClawWorkflowPreferences; governor: OpenClawGovernor }> {
   const current = await readOpenClawWorkflowPreferences(env, user);
   const body = await readJson<Partial<OpenClawWorkflowPreferences>>(request);
-  const preferences = normalizeOpenClawPreferences({ ...body, updatedAt: Date.now() }, current);
+  const now = Date.now();
+  const usageValueSupplied =
+    body.weeklyRemainingBaseline !== undefined || body.weeklyRemainingCurrent !== undefined;
+  const normalizedBody = normalizeOpenClawPreferences(
+    {
+      ...current,
+      ...body,
+      usageWindowStartedAt: current.usageWindowStartedAt,
+      updatedAt: current.updatedAt,
+    },
+    current,
+  );
+  const usageValuesChanged =
+    normalizedBody.weeklyRemainingBaseline !== current.weeklyRemainingBaseline ||
+    normalizedBody.weeklyRemainingCurrent !== current.weeklyRemainingCurrent;
+  const usageValuesCleared =
+    normalizedBody.weeklyRemainingBaseline === null &&
+    normalizedBody.weeklyRemainingCurrent === null;
+  const usageWindowStartedAt =
+    body.usageWindowStartedAt !== undefined
+      ? body.usageWindowStartedAt
+      : usageValuesCleared
+        ? null
+        : usageValueSupplied && usageValuesChanged
+          ? now
+          : current.usageWindowStartedAt;
+  const preferences = normalizeOpenClawPreferences(
+    {
+      ...body,
+      usageWindowStartedAt,
+      updatedAt: now,
+    },
+    current,
+  );
   await writeOpenClawWorkflowPreferences(env, preferences);
   await audit(
     env,
@@ -2515,6 +2685,7 @@ async function readOpenClawWorkflowPreferences(
       dailyUsageDropLimit: row.daily_usage_drop_limit,
       maxParallelWorkers: row.max_parallel_workers,
       minimumIssueAgeHours: row.minimum_issue_age_hours,
+      codexReasoningEffort: row.codex_reasoning_effort,
       weeklyRemainingBaseline: row.weekly_remaining_baseline,
       weeklyRemainingCurrent: row.weekly_remaining_current,
       usageWindowStartedAt: row.usage_window_started_at,
@@ -2540,6 +2711,7 @@ async function writeOpenClawWorkflowPreferences(
       daily_usage_drop_limit: preferences.dailyUsageDropLimit,
       max_parallel_workers: preferences.maxParallelWorkers,
       minimum_issue_age_hours: preferences.minimumIssueAgeHours,
+      codex_reasoning_effort: preferences.codexReasoningEffort,
       weekly_remaining_baseline: preferences.weeklyRemainingBaseline,
       weekly_remaining_current: preferences.weeklyRemainingCurrent,
       usage_window_started_at: preferences.usageWindowStartedAt,
@@ -2555,6 +2727,7 @@ async function writeOpenClawWorkflowPreferences(
         daily_usage_drop_limit: preferences.dailyUsageDropLimit,
         max_parallel_workers: preferences.maxParallelWorkers,
         minimum_issue_age_hours: preferences.minimumIssueAgeHours,
+        codex_reasoning_effort: preferences.codexReasoningEffort,
         weekly_remaining_baseline: preferences.weeklyRemainingBaseline,
         weekly_remaining_current: preferences.weeklyRemainingCurrent,
         usage_window_started_at: preferences.usageWindowStartedAt,
@@ -2570,6 +2743,7 @@ async function fetchOpenClawQueue(
   repo: string,
   definition: OpenClawQueueDefinition,
   minimumIssueAgeHours: number,
+  codexReasoningEffort: OpenClawReasoningEffort,
 ): Promise<OpenClawQueueResult> {
   const now = Date.now();
   const query = buildOpenClawIssueSearchQuery(repo, definition, now);
@@ -2590,7 +2764,13 @@ async function fetchOpenClawQueue(
       const pageCandidates = (payload.items ?? [])
         .filter((item) => !item.pull_request)
         .map((item) =>
-          openClawCandidateFromSearchItem(item, definition.id, now, minimumIssueAgeHours),
+          openClawCandidateFromSearchItem(
+            item,
+            definition.id,
+            now,
+            minimumIssueAgeHours,
+            codexReasoningEffort,
+          ),
         )
         .filter((candidate) => candidate.signals.ageGate !== "too-old");
       candidates.push(...pageCandidates);
@@ -2611,6 +2791,7 @@ async function fetchOpenClawQueue(
         token,
         definition,
         minimumIssueAgeHours,
+        codexReasoningEffort,
         now,
       );
       return {
@@ -2639,6 +2820,7 @@ async function fetchOpenClawQueueFromRest(
   token: string | undefined,
   definition: OpenClawQueueDefinition,
   minimumIssueAgeHours: number,
+  codexReasoningEffort: OpenClawReasoningEffort,
   now: number,
 ): Promise<OpenClawQueueResult> {
   const candidates: OpenClawCandidate[] = [];
@@ -2652,7 +2834,13 @@ async function fetchOpenClawQueueFromRest(
     const pageCandidates = payload
       .filter((item) => !item.pull_request)
       .map((item) =>
-        openClawCandidateFromSearchItem(item, definition.id, now, minimumIssueAgeHours),
+        openClawCandidateFromSearchItem(
+          item,
+          definition.id,
+          now,
+          minimumIssueAgeHours,
+          codexReasoningEffort,
+        ),
       )
       .filter((candidate) => openClawCandidateMatchesQueue(candidate, definition))
       .filter((candidate) => candidate.signals.ageGate === "eligible");
@@ -2666,6 +2854,123 @@ async function fetchOpenClawQueueFromRest(
     candidates: candidates.slice(0, 6),
     error: null,
   };
+}
+
+async function fetchOpenClawPrCoverageForQueues(
+  token: string | undefined,
+  repo: string,
+  results: OpenClawQueueResult[],
+): Promise<{ map: Map<number, OpenClawPrCoverage[]>; error: string | null }> {
+  const candidates = uniqueOpenClawCandidates(results.flatMap((result) => result.candidates));
+  return fetchOpenClawPrCoverageForCandidates(token, repo, candidates);
+}
+
+async function fetchOpenClawPrCoverageForCandidates(
+  token: string | undefined,
+  repo: string,
+  candidates: OpenClawCandidate[],
+): Promise<{ map: Map<number, OpenClawPrCoverage[]>; error: string | null }> {
+  const candidateByNumber = new Map(candidates.map((candidate) => [candidate.number, candidate]));
+  const map = new Map<number, OpenClawPrCoverage[]>();
+  if (!candidateByNumber.size) return { map, error: null };
+
+  const maxPages = 2;
+  let complete = false;
+  for (let page = 1; page <= maxPages; page += 1) {
+    const pulls = await githubApi<GitHubPullRequestPayload[]>(
+      token,
+      openClawPullRequestListPath(repo, page),
+    );
+    for (const pull of pulls) {
+      for (const candidate of candidateByNumber.values()) {
+        const reason = openClawPrIssueReferenceReason(repo, pull, candidate.number);
+        if (!reason) continue;
+        const coverage: OpenClawPrCoverage = {
+          number: pull.number,
+          title: pull.title,
+          url: pull.html_url,
+          author: pull.user?.login ?? null,
+          draft: Boolean(pull.draft),
+          updatedAt: pull.updated_at ?? null,
+          reason,
+        };
+        const existing = map.get(candidate.number) ?? [];
+        if (!existing.some((item) => item.number === coverage.number)) {
+          existing.push(coverage);
+          map.set(candidate.number, existing);
+        }
+      }
+    }
+    if (pulls.length < 100) {
+      complete = true;
+      break;
+    }
+  }
+
+  return {
+    map,
+    error: complete
+      ? null
+      : `Possible PR coverage scan is partial after ${maxPages * 100} recent open PRs.`,
+  };
+}
+
+function attachOpenClawPrCoverage(
+  results: OpenClawQueueResult[],
+  coverage: Map<number, OpenClawPrCoverage[]>,
+  codexReasoningEffort: OpenClawReasoningEffort,
+  coverageError: string | null = null,
+): OpenClawQueueResult[] {
+  return results.map((result) => ({
+    ...result,
+    candidates: result.candidates.map((candidate) => {
+      const coverageBlocksPickup = openClawPrCoverageErrorBlocksPickup(coverageError);
+      const next = {
+        ...candidate,
+        possiblePrCoverage: coverage.get(candidate.number) ?? candidate.possiblePrCoverage ?? [],
+        prCoverageUnknown: coverageBlocksPickup,
+        prCoverageWarning: coverageError,
+      };
+      return {
+        ...next,
+        workPrompt: buildOpenClawIssuePrompt(next, { codexReasoningEffort }),
+      };
+    }),
+  }));
+}
+
+function openClawPrCoverageErrorBlocksPickup(error: string | null): boolean {
+  if (!error) return false;
+  return !/^Possible PR coverage scan is partial\b/i.test(error);
+}
+
+function openClawPrIssueReferenceReason(
+  repo: string,
+  pull: Pick<GitHubPullRequestPayload, "body" | "title">,
+  issueNumber: number,
+): string | null {
+  const number = String(issueNumber);
+  const text = `${pull.title || ""}\n${pull.body || ""}`;
+  const repoPattern = escapeRegExp(repo);
+  if (
+    new RegExp(
+      `\\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\\s+(?:${repoPattern})?#${number}\\b`,
+      "i",
+    ).test(text)
+  ) {
+    return `PR text uses a closing reference to #${number}`;
+  }
+  if (new RegExp(`github\\.com/${repoPattern}/issues/${number}\\b`, "i").test(text)) {
+    return `PR text links the issue URL for #${number}`;
+  }
+  if (new RegExp(`(?:^|[^A-Za-z0-9_])#${number}\\b`, "i").test(text)) {
+    return `PR text mentions #${number}`;
+  }
+  return null;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function openClawIssueListPath(
@@ -2690,7 +2995,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function hydrateOpenClawPartialQueueResults(results: OpenClawQueueResult[]): OpenClawQueueResult[] {
+function hydrateOpenClawPartialQueueResults(
+  results: OpenClawQueueResult[],
+  codexReasoningEffort: OpenClawReasoningEffort,
+): OpenClawQueueResult[] {
   const available = uniqueOpenClawCandidates(
     results.flatMap((result) => (result.error ? [] : result.candidates)),
   );
@@ -2702,7 +3010,10 @@ function hydrateOpenClawPartialQueueResults(results: OpenClawQueueResult[]): Ope
       .filter((candidate) => openClawCandidateMatchesQueue(candidate, result.definition))
       .map((candidate) => {
         const hydrated = { ...candidate, queueId: result.definition.id };
-        return { ...hydrated, workPrompt: buildOpenClawIssuePrompt(hydrated) };
+        return {
+          ...hydrated,
+          workPrompt: buildOpenClawIssuePrompt(hydrated, { codexReasoningEffort }),
+        };
       })
       .sort(
         (left, right) =>
@@ -2737,7 +3048,9 @@ async function fetchOpenClawPullRequests(
   repo: string,
   login: string,
 ): Promise<{ items: OpenClawPullRequestSummary[]; error: string | null }> {
-  const query = `repo:${repo} is:pr is:open author:${login}`;
+  const safeLogin = normalizeGitHubLogin(login);
+  if (!safeLogin) return { items: [], error: "GitHub login is invalid" };
+  const query = `repo:${repo} is:pr is:open author:${safeLogin}`;
   try {
     const payload = await githubSearchIssues<GitHubSearchIssueItem>(
       env,
@@ -2756,7 +3069,7 @@ async function fetchOpenClawPullRequests(
   } catch (error) {
     const searchError = errorMessage(error);
     try {
-      const fallback = await fetchOpenClawPullRequestsFromRest(env, token, repo, login);
+      const fallback = await fetchOpenClawPullRequestsFromRest(env, token, repo, safeLogin);
       return {
         items: fallback.items,
         error: fallback.error ? `GitHub Search failed: ${searchError}; ${fallback.error}` : null,
@@ -2778,7 +3091,8 @@ async function fetchOpenClawPullRequestsFromRest(
   repo: string,
   login: string,
 ): Promise<{ items: OpenClawPullRequestSummary[]; error: string | null }> {
-  const normalizedLogin = login.toLowerCase();
+  const normalizedLogin = normalizeGitHubLogin(login);
+  if (!normalizedLogin) return { items: [], error: "GitHub login is invalid" };
   const authored: GitHubPullRequestPayload[] = [];
   let complete = false;
   const maxPages = 5;
@@ -2827,7 +3141,7 @@ async function fetchOpenClawPullRequestFromPull(
   const signals = openClawPrSignals(labels);
   const checks = pull.head.sha
     ? await fetchOpenClawCheckSummary(env, token, repo, pull.head.sha, signals)
-    : unknownCheckSummary(signals);
+    : unknownOpenClawCheckSummary(signals);
   return {
     number: pull.number,
     title: pull.title,
@@ -2872,7 +3186,7 @@ async function fetchOpenClawPullRequest(
     );
     const checks = pull.head.sha
       ? await fetchOpenClawCheckSummary(env, token, repo, pull.head.sha, signals)
-      : unknownCheckSummary(signals);
+      : unknownOpenClawCheckSummary(signals);
     return {
       number: item.number,
       title: item.title,
@@ -2898,7 +3212,7 @@ async function fetchOpenClawPullRequest(
       draft: false,
       updatedAt: item.updated_at,
       signals,
-      checks: unknownCheckSummary(signals),
+      checks: unknownOpenClawCheckSummary(signals),
     };
   }
 }
@@ -2910,81 +3224,26 @@ async function fetchOpenClawCheckSummary(
   sha: string,
   signals: ReturnType<typeof openClawPrSignals>,
 ): Promise<OpenClawCheckSummary> {
-  try {
-    const [checkRuns, combined] = await Promise.all([
-      githubApi<GitHubCheckRunsPayload>(
-        token,
-        `/repos/${repo}/commits/${sha}/check-runs?per_page=100`,
-      ),
-      githubApi<GitHubCombinedStatusPayload>(token, `/repos/${repo}/commits/${sha}/status`),
-    ]);
-    return summarizeOpenClawChecks(checkRuns.check_runs ?? [], combined, signals);
-  } catch {
-    return unknownCheckSummary(signals);
+  const [checkRunsResult, combinedResult] = await Promise.allSettled([
+    githubApi<GitHubCheckRunsPayload>(
+      token,
+      `/repos/${repo}/commits/${sha}/check-runs?per_page=100`,
+    ),
+    githubApi<GitHubCombinedStatusPayload>(token, `/repos/${repo}/commits/${sha}/status`),
+  ]);
+  if (checkRunsResult.status === "rejected" && combinedResult.status === "rejected") {
+    return unknownOpenClawCheckSummary(signals);
   }
-}
-
-function summarizeOpenClawChecks(
-  checkRuns: GitHubCheckRunPayload[],
-  combined: GitHubCombinedStatusPayload,
-  signals: ReturnType<typeof openClawPrSignals>,
-): OpenClawCheckSummary {
-  const failing = new Set<string>();
-  const pending = new Set<string>();
-  const timedOut = new Set<string>();
-  let mantis: string | null = signals.mantisRequested ? "requested" : null;
-  for (const run of checkRuns) {
-    const name = run.name || "check";
-    const status = run.status.toLowerCase();
-    const conclusion = (run.conclusion ?? "").toLowerCase();
-    if (name.toLowerCase().includes("mantis")) {
-      mantis = conclusion || status || "seen";
-    }
-    if (status !== "completed") {
-      pending.add(name);
-      continue;
-    }
-    if (conclusion === "timed_out") timedOut.add(name);
-    if (
-      ["failure", "cancelled", "timed_out", "action_required", "startup_failure"].includes(
-        conclusion,
-      )
-    ) {
-      failing.add(name);
-    }
+  if (checkRunsResult.status === "rejected") {
+    if (combinedResult.status !== "fulfilled") return unknownOpenClawCheckSummary(signals);
+    const legacySummary = summarizeOpenClawChecks([], combinedResult.value, signals);
+    return legacySummary.state === "green" ? unknownOpenClawCheckSummary(signals) : legacySummary;
   }
-  for (const status of combined.statuses ?? []) {
-    if (status.state === "pending") pending.add(status.context);
-    if (["failure", "error"].includes(status.state)) failing.add(status.context);
-  }
-  const total = checkRuns.length + (combined.statuses?.length ?? 0);
-  const state =
-    failing.size > 0
-      ? "failing"
-      : pending.size > 0
-        ? "pending"
-        : total > 0 || combined.state === "success"
-          ? "green"
-          : "unknown";
-  return {
-    state,
-    total,
-    failing: [...failing].sort(),
-    pending: [...pending].sort(),
-    timedOut: [...timedOut].sort(),
-    mantis,
-  };
-}
-
-function unknownCheckSummary(signals: ReturnType<typeof openClawPrSignals>): OpenClawCheckSummary {
-  return {
-    state: "unknown",
-    total: 0,
-    failing: [],
-    pending: [],
-    timedOut: [],
-    mantis: signals.mantisRequested ? "requested" : null,
-  };
+  return summarizeOpenClawChecks(
+    checkRunsResult.status === "fulfilled" ? (checkRunsResult.value.check_runs ?? []) : [],
+    combinedResult.status === "fulfilled" ? combinedResult.value : null,
+    signals,
+  );
 }
 
 function openClawCandidateFromSearchItem(
@@ -2992,6 +3251,7 @@ function openClawCandidateFromSearchItem(
   queueId: string,
   now: number,
   minimumIssueAgeHours: number,
+  codexReasoningEffort: OpenClawReasoningEffort,
 ): OpenClawCandidate {
   const labels = gitHubLabelNames(item.labels);
   const candidate = {
@@ -3005,7 +3265,10 @@ function openClawCandidateFromSearchItem(
     queueId,
     signals: openClawIssueSignals(labels, item.created_at, now, minimumIssueAgeHours),
   };
-  return { ...candidate, workPrompt: buildOpenClawIssuePrompt(candidate) };
+  return {
+    ...candidate,
+    workPrompt: buildOpenClawIssuePrompt(candidate, { codexReasoningEffort }),
+  };
 }
 
 function gitHubLabelNames(labels: Array<GitHubLabelPayload | string> | undefined): string[] {
@@ -3024,28 +3287,11 @@ async function githubSearchIssues<T>(
   page = 1,
 ): Promise<GitHubSearchPayload<T>> {
   const path = githubSearchIssuesPath(query, sort, order, perPage, page);
-  try {
-    const cached = await readGitHubSearchCache<T>(token, path);
-    if (cached) return cached;
-    const payload = await githubApi<GitHubSearchPayload<T>>(token, path);
-    await writeGitHubSearchCache(token, path, payload);
-    return payload;
-  } catch (error) {
-    if (!(error instanceof GitHubApiError) || error.status !== 422 || !query.includes("-linked:pr"))
-      throw error;
-    const retryPath = githubSearchIssuesPath(
-      query.replace(" -linked:pr", ""),
-      sort,
-      order,
-      perPage,
-      page,
-    );
-    const cached = await readGitHubSearchCache<T>(token, retryPath);
-    if (cached) return cached;
-    const payload = await githubApi<GitHubSearchPayload<T>>(token, retryPath);
-    await writeGitHubSearchCache(token, retryPath, payload);
-    return payload;
-  }
+  const cached = await readGitHubSearchCache<T>(token, path);
+  if (cached) return cached;
+  const payload = await githubApi<GitHubSearchPayload<T>>(token, path);
+  await writeGitHubSearchCache(token, path, payload);
+  return payload;
 }
 
 function githubSearchIssuesPath(
@@ -7582,8 +7828,12 @@ function authMethods(env: RuntimeEnv, request?: Request): Record<string, boolean
   return {
     github: Boolean(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET),
     token: Boolean(env.CRABBOX_BOOTSTRAP_TOKEN),
-    devIdentity: request ? isLocalDevRequest(request) : false,
+    devIdentity: request ? devIdentityEnabled(env, request) : false,
   };
+}
+
+function devIdentityEnabled(env: RuntimeEnv, request: Request): boolean {
+  return env.CRABFLEET_DEV_IDENTITY === "1" && isLocalDevRequest(request);
 }
 
 function actor(user: Pick<User, "subject" | "login" | "email">): string {
@@ -7591,13 +7841,23 @@ function actor(user: Pick<User, "subject" | "login" | "email">): string {
 }
 
 function isLocalDevRequest(request: Request): boolean {
-  const hostname = new URL(request.url).hostname.toLowerCase();
+  return isLocalDevHost(new URL(request.url).hostname);
+}
+
+function isLocalDevHost(value: string | null): boolean {
+  if (!value) return false;
+  const trimmed = value.trim().toLowerCase();
+  let hostname = trimmed;
+  if (trimmed.startsWith("[")) {
+    hostname = trimmed.slice(1, trimmed.indexOf("]") === -1 ? undefined : trimmed.indexOf("]"));
+  } else if (!trimmed.includes("::")) {
+    hostname = trimmed.replace(/:\d+$/, "");
+  }
   return (
     hostname === "localhost" ||
     hostname.endsWith(".localhost") ||
     hostname === "127.0.0.1" ||
-    hostname === "::1" ||
-    hostname === "[::1]"
+    hostname === "::1"
   );
 }
 

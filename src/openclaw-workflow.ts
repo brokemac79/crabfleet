@@ -1,4 +1,6 @@
 export type OpenClawRoleMode = "contributor" | "trial_maintainer" | "maintainer";
+export type OpenClawReasoningEffort = "low" | "medium" | "high" | "xhigh";
+export type OpenClawProofMode = "auto" | "local" | "crabbox" | "testbox" | "mantis";
 
 export type OpenClawWorkflowPreferences = {
   subject: string;
@@ -10,6 +12,7 @@ export type OpenClawWorkflowPreferences = {
   dailyUsageDropLimit: number;
   maxParallelWorkers: number;
   minimumIssueAgeHours: number;
+  codexReasoningEffort: OpenClawReasoningEffort;
   weeklyRemainingBaseline: number | null;
   weeklyRemainingCurrent: number | null;
   usageWindowStartedAt: number | null;
@@ -52,7 +55,20 @@ export type OpenClawCandidate = {
   labels: string[];
   queueId: string;
   signals: OpenClawIssueSignals;
+  possiblePrCoverage?: OpenClawPrCoverage[];
+  prCoverageUnknown?: boolean;
+  prCoverageWarning?: string | null;
   workPrompt?: string;
+};
+
+export type OpenClawPrCoverage = {
+  number: number;
+  title: string;
+  url: string;
+  author: string | null;
+  draft: boolean;
+  updatedAt: string | null;
+  reason: string;
 };
 
 type OpenClawCandidatePriorityInput = {
@@ -76,6 +92,32 @@ export type OpenClawPrSignals = {
   mantisRequested: boolean;
   clawsweeperHumanReview: boolean;
   statusLabel: string | null;
+};
+
+export type OpenClawCheckSummary = {
+  state: "unknown" | "green" | "pending" | "failing";
+  total: number;
+  failing: string[];
+  pending: string[];
+  timedOut: string[];
+  mantis: string | null;
+};
+
+export type OpenClawCheckRunLike = {
+  name?: string | null;
+  status?: string | null;
+  conclusion?: string | null;
+  created_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+};
+
+export type OpenClawCombinedStatusLike = {
+  state?: string | null;
+  statuses?: Array<{
+    state?: string | null;
+    context?: string | null;
+  }> | null;
 };
 
 export type OpenClawGovernor = {
@@ -102,7 +144,22 @@ export type OpenClawHandoffInput = {
 
 export const openClawDefaultRepo = "openclaw/openclaw";
 export const openClawDefaultMinimumIssueAgeHours = 6;
+export const openClawDefaultReasoningEffort: OpenClawReasoningEffort = "high";
+export const openClawDefaultProofMode: OpenClawProofMode = "auto";
 export const openClawMaximumIssueAgeMs = 30 * 24 * 60 * 60 * 1000;
+export const openClawReasoningEfforts: OpenClawReasoningEffort[] = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+];
+export const openClawProofModes: OpenClawProofMode[] = [
+  "auto",
+  "local",
+  "crabbox",
+  "testbox",
+  "mantis",
+];
 
 export const openClawDefaultPreferences: Omit<
   OpenClawWorkflowPreferences,
@@ -116,6 +173,7 @@ export const openClawDefaultPreferences: Omit<
   dailyUsageDropLimit: 5,
   maxParallelWorkers: 2,
   minimumIssueAgeHours: openClawDefaultMinimumIssueAgeHours,
+  codexReasoningEffort: openClawDefaultReasoningEffort,
   weeklyRemainingBaseline: null,
   weeklyRemainingCurrent: null,
   usageWindowStartedAt: null,
@@ -195,7 +253,7 @@ export function normalizeOpenClawPreferences(
     subject: fallback.subject,
     roleMode: roleMode(value.roleMode, fallback.roleMode),
     targetRepo: normalizeGitHubRepo(value.targetRepo) || fallback.targetRepo,
-    githubLogin: cleanText(value.githubLogin, 80) || fallback.githubLogin,
+    githubLogin: normalizeGitHubLogin(value.githubLogin) || fallback.githubLogin,
     activeOpenPrLimit: integerInRange(value.activeOpenPrLimit, 1, 20, fallback.activeOpenPrLimit),
     hardOpenPrCap: integerInRange(value.hardOpenPrCap, 1, 20, fallback.hardOpenPrCap),
     dailyUsageDropLimit: integerInRange(
@@ -211,11 +269,63 @@ export function normalizeOpenClawPreferences(
       168,
       fallback.minimumIssueAgeHours,
     ),
-    weeklyRemainingBaseline: nullablePercent(value.weeklyRemainingBaseline),
-    weeklyRemainingCurrent: nullablePercent(value.weeklyRemainingCurrent),
-    usageWindowStartedAt: nullablePositiveInteger(value.usageWindowStartedAt),
+    codexReasoningEffort: normalizeOpenClawReasoningEffort(
+      value.codexReasoningEffort,
+      fallback.codexReasoningEffort,
+    ),
+    weeklyRemainingBaseline:
+      value.weeklyRemainingBaseline === undefined
+        ? fallback.weeklyRemainingBaseline
+        : nullablePercent(value.weeklyRemainingBaseline),
+    weeklyRemainingCurrent:
+      value.weeklyRemainingCurrent === undefined
+        ? fallback.weeklyRemainingCurrent
+        : nullablePercent(value.weeklyRemainingCurrent),
+    usageWindowStartedAt:
+      value.usageWindowStartedAt === undefined
+        ? fallback.usageWindowStartedAt
+        : nullablePositiveInteger(value.usageWindowStartedAt),
     updatedAt: nullablePositiveInteger(value.updatedAt) ?? fallback.updatedAt,
   };
+}
+
+export function normalizeOpenClawReasoningEffort(
+  value: unknown,
+  fallback: OpenClawReasoningEffort = openClawDefaultReasoningEffort,
+): OpenClawReasoningEffort {
+  const effort = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  return openClawReasoningEfforts.includes(effort as OpenClawReasoningEffort)
+    ? (effort as OpenClawReasoningEffort)
+    : fallback;
+}
+
+export function openClawReasoningEffortLabel(value: unknown): string {
+  const effort = normalizeOpenClawReasoningEffort(value);
+  if (effort === "xhigh") return "Extra high";
+  return effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+export function normalizeOpenClawProofMode(
+  value: unknown,
+  fallback: OpenClawProofMode = openClawDefaultProofMode,
+): OpenClawProofMode {
+  const mode = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  return openClawProofModes.includes(mode as OpenClawProofMode)
+    ? (mode as OpenClawProofMode)
+    : fallback;
+}
+
+export function openClawProofModeLabel(value: unknown): string {
+  const mode = normalizeOpenClawProofMode(value);
+  if (mode === "auto") return "Auto proof";
+  if (mode === "local") return "Local proof";
+  if (mode === "crabbox") return "Crabbox proof";
+  if (mode === "testbox") return "Blacksmith Testbox";
+  return "Mantis if available";
 }
 
 export function normalizeGitHubRepo(value: unknown): string {
@@ -226,6 +336,13 @@ export function normalizeGitHubRepo(value: unknown): string {
     .replace(/\.git$/, "")
     .replace(/\/+$/, "");
   return /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repo) ? repo : "";
+}
+
+export function normalizeGitHubLogin(value: unknown): string {
+  const login = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  return /^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/.test(login) ? login : "";
 }
 
 export function buildOpenClawIssueSearchQuery(
@@ -269,7 +386,8 @@ export function openClawIssueSignals(
     sourceRepro: has("clawsweeper:source-repro"),
     currentMainRepro: has("clawsweeper:current-main-repro"),
     fixShapeClear: has("clawsweeper:fix-shape-clear"),
-    needsLiveValidation: has("clawsweeper:needs-live-validation"),
+    needsLiveValidation:
+      has("clawsweeper:needs-live-validation") || has("clawsweeper:needs-live-repro"),
     blockers,
     ageGate,
     readyForPickup:
@@ -307,6 +425,100 @@ export function openClawPrSignals(labels: string[]): OpenClawPrSignals {
   };
 }
 
+export function summarizeOpenClawChecks(
+  checkRuns: OpenClawCheckRunLike[],
+  combined: OpenClawCombinedStatusLike | null | undefined,
+  signals: Pick<OpenClawPrSignals, "mantisRequested">,
+): OpenClawCheckSummary {
+  const failing = new Set<string>();
+  const pending = new Set<string>();
+  const timedOut = new Set<string>();
+  const latestRuns = latestOpenClawCheckRuns(checkRuns);
+  let mantis: string | null = signals.mantisRequested ? "requested" : null;
+
+  for (const run of latestRuns) {
+    const name = run.name || "check";
+    const status = (run.status || "").toLowerCase();
+    const conclusion = (run.conclusion ?? "").toLowerCase();
+    if (name.toLowerCase().includes("mantis")) {
+      mantis = conclusion || status || "seen";
+    }
+    if (status !== "completed") {
+      pending.add(name);
+      continue;
+    }
+    if (conclusion === "timed_out") timedOut.add(name);
+    if (
+      ["failure", "cancelled", "timed_out", "action_required", "startup_failure"].includes(
+        conclusion,
+      )
+    ) {
+      failing.add(name);
+    }
+  }
+
+  for (const status of combined?.statuses ?? []) {
+    const context = status.context || "status";
+    const state = (status.state || "").toLowerCase();
+    if (state === "pending") pending.add(context);
+    if (["failure", "error"].includes(state)) failing.add(context);
+  }
+
+  const total = latestRuns.length + (combined?.statuses?.length ?? 0);
+  const state =
+    failing.size > 0
+      ? "failing"
+      : pending.size > 0
+        ? "pending"
+        : total > 0 || combined?.state === "success"
+          ? "green"
+          : "unknown";
+
+  return {
+    state,
+    total,
+    failing: [...failing].sort(),
+    pending: [...pending].sort(),
+    timedOut: [...timedOut].sort(),
+    mantis,
+  };
+}
+
+export function unknownOpenClawCheckSummary(
+  signals: Pick<OpenClawPrSignals, "mantisRequested">,
+): OpenClawCheckSummary {
+  return {
+    state: "unknown",
+    total: 0,
+    failing: [],
+    pending: [],
+    timedOut: [],
+    mantis: signals.mantisRequested ? "requested" : null,
+  };
+}
+
+function latestOpenClawCheckRuns(checkRuns: OpenClawCheckRunLike[]): OpenClawCheckRunLike[] {
+  const latestByName = new Map<string, OpenClawCheckRunLike>();
+  for (const run of [...checkRuns].sort(compareOpenClawCheckRunsNewestFirst)) {
+    const name = run.name || "check";
+    if (!latestByName.has(name)) latestByName.set(name, run);
+  }
+  return [...latestByName.values()];
+}
+
+function compareOpenClawCheckRunsNewestFirst(
+  left: OpenClawCheckRunLike,
+  right: OpenClawCheckRunLike,
+): number {
+  return openClawCheckRunTime(right) - openClawCheckRunTime(left);
+}
+
+function openClawCheckRunTime(run: OpenClawCheckRunLike): number {
+  const value = run.completed_at || run.started_at || run.created_at || "";
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : 0;
+}
+
 export function openClawCandidateMatchesQueue(
   candidate: Pick<OpenClawCandidate, "labels" | "signals">,
   queue: Pick<OpenClawQueueDefinition, "labels" | "excludeLabels">,
@@ -335,7 +547,7 @@ export function evaluateOpenClawGovernor(
   const usageWindowAgeHours = preferences.usageWindowStartedAt
     ? Math.max(0, (now - preferences.usageWindowStartedAt) / 3_600_000)
     : null;
-  const usageWindowActive = usageWindowAgeHours === null || usageWindowAgeHours <= 24;
+  const usageWindowActive = usageWindowAgeHours !== null && usageWindowAgeHours <= 24;
   const reasons: string[] = [];
   if (openPrCount >= preferences.hardOpenPrCap) {
     reasons.push(`Hard OpenClaw cap reached (${openPrCount}/${preferences.hardOpenPrCap}).`);
@@ -400,8 +612,25 @@ export function openClawCandidatePriorityRank(
   return score;
 }
 
-export function buildOpenClawIssuePrompt(candidate: OpenClawCandidate): string {
+export function buildOpenClawIssuePrompt(
+  candidate: OpenClawCandidate,
+  options: {
+    codexReasoningEffort?: OpenClawReasoningEffort;
+    proofMode?: OpenClawProofMode;
+    claimCommentStatus?: unknown;
+  } = {},
+): string {
   const labels = candidate.labels.length ? candidate.labels.join(", ") : "none";
+  const reasoningEffort = normalizeOpenClawReasoningEffort(options.codexReasoningEffort);
+  const reasoningLabel = openClawReasoningEffortLabel(reasoningEffort);
+  const proofMode = normalizeOpenClawProofMode(options.proofMode);
+  const proofLabel = openClawProofModeLabel(proofMode);
+  const possibleCoverage = (candidate.possiblePrCoverage ?? []).slice(0, 5);
+  const coverageUnknown = Boolean(candidate.prCoverageUnknown);
+  const claimStatus = String(options.claimCommentStatus || "");
+  const claimAlreadyHandled = ["posted", "already-commented", "bridge-managed"].includes(
+    claimStatus,
+  );
   return [
     `Start work on this OpenClaw issue: ${candidate.url}`,
     "",
@@ -412,23 +641,74 @@ export function buildOpenClawIssuePrompt(candidate: OpenClawCandidate): string {
     "",
     "Goal:",
     "Produce a focused fix PR that is ready for maintainer review. Do not merge, land, or enable automerge.",
+    "You are working from a contributor/trial-maintainer posture unless explicitly told otherwise. Prepare evidence and handoff text; do not assume merge, close, direct-land, or release-pick permissions.",
     "",
+    "Codex setup:",
+    `Use model_reasoning_effort="${reasoningEffort}" (${reasoningLabel}) for this fix unless the local session already has a more specific explicit setting.`,
+    "If this came from Claw Queue, work in the bridge-created worktree/branch and avoid `git pull` inside that worktree. Re-check GitHub live state with the available GitHub connector if local `gh` or `gitcrawl` config is outside the sandbox.",
+    "",
+    "Proof setup:",
+    `Mode: ${proofLabel}. ${openClawProofModeInstruction(proofMode)}`,
+    "Check required proof tooling early. If Crabbox, Blacksmith Testbox, Mantis, live credentials, or Codex review are unavailable, park with a concise blocker note instead of opening an under-proved PR.",
+    "Use Tokenjuice for terminal-heavy output compaction when available. Verify with `tokenjuice doctor hooks` if output compaction looks broken, use `tokenjuice stats --timezone utc` for compaction stats, and use `tokenjuice wrap --raw -- <command>` when exact raw output is required.",
+    "",
+    ...openClawPossibleCoveragePromptLines(possibleCoverage),
+    ...(coverageUnknown
+      ? [
+          "Possible open PR coverage lookup did not complete. Re-check open PRs before coding and do not start a competing fix if an existing PR covers this issue.",
+          "",
+        ]
+      : []),
     "Process:",
-    "1. Re-check the issue on GitHub before coding. Confirm it is still open, has no linked/open fix PR, and ClawSweeper marked it queueable.",
+    "1. Re-check the issue on GitHub before coding. Confirm it is still open, has no linked/open fix PR, no possible open PR already covering the same fix, and ClawSweeper marked it queueable.",
     "2. Read and follow the latest local OpenClaw AGENTS.md, CONTRIBUTING.md, and pull request template. If they are missing locally, fetch the current files from the target OpenClaw repo before continuing.",
-    "3. Use the OpenClaw pre-PR issue intake gate: understand the report, reproduce or prove the behavior where feasible, and identify the smallest safe fix shape.",
+    "3. Use the OpenClaw pre-PR issue intake gate: understand the report, reproduce or prove the behavior where feasible, check whether the issue still exists on current main and latest release, check the reported branch/version when available, and identify the smallest focused fix shape.",
     "4. Follow ClawSweeper's assessment and suggested route. Stop with a concise blocker note if it needs a product, security, maintainer, or reporter decision.",
-    "5. If issue claiming is not available, comment on the issue that you are working on it before making the PR.",
-    "6. Keep the change focused. Avoid unrelated refactors and avoid CHANGELOG edits unless OpenClaw's current contributing guidance explicitly requires one.",
-    "7. Run the relevant local tests and proof commands. Include before/after evidence when the issue needs behavior proof. Use Mantis if it is available and relevant.",
-    "8. Before opening or updating the PR, run Codex review with the appropriate base, normally: codex review --base origin/main.",
-    "9. Open or update the PR only when the fix is ready for maintainer review. The PR body must link the issue and include proof, tests, Codex review, and any Mantis/ClawSweeper notes.",
-    "10. After opening/updating the PR, monitor CI and ClawSweeper. If checks fail, fix them and update the PR. If CI times out/flakes, rerun or make a harmless update only when that is the accepted OpenClaw process.",
-    "11. Do not stop just because the PR exists. Stop only when CI is green or failures are explained, Codex review has passed, proof is sufficient, and ClawSweeper/status labels indicate it is ready for maintainer look.",
-    "12. If proof is insufficient and Mantis is unavailable or broken, park the work with a short blocker note explaining what is missing.",
+    claimAlreadyHandled
+      ? "5. Claw Queue already posted or found the issue claim comment for this run. Do not post a duplicate claim comment; just verify the issue is still yours before opening the PR."
+      : "5. If issue claiming is not available, comment on the issue that you are working on it before making the PR.",
+    "6. Check maintainer-handbook routing before editing: release-sensitive fixes need release-branch awareness and a release-pick note; plugin install/update/SDK/package behavior needs maintainer-channel discussion before final shape; security-adjacent auth, sandbox, command execution, file access, token, updater, provider, GHSA, CVE, advisory, or hardening work must avoid public vulnerability metadata and should be parked/escalated rather than handled as an ordinary public PR.",
+    "7. Confirm the target repo owns the surface. If the issue belongs in ClawHub, plugin-inspector, kitchen-sink, crabpot, crabbox, gitcrawl, ClawSweeper, maintainers, or another OpenClaw repo, route or park it instead of patching the wrong repo.",
+    "8. Keep the change focused. Avoid unrelated refactors and avoid CHANGELOG edits unless OpenClaw's current contributing guidance explicitly requires one. If the change is user-visible, operationally meaningful, security-relevant, or release-note worthy, include release-note context in the PR body or handoff as the current repo guidance allows.",
+    "9. Run the relevant proof for the selected proof mode plus local tests where useful. Include before/after evidence when the issue needs behavior proof. Use Crabbox/Blacksmith Testbox for remote validation when available, and use Mantis if it is available and relevant. Broaden validation for shared runtime, plugin contracts, release paths, security paths, package management, onboarding, or cross-platform behavior; do not duplicate heavy checks already running, and document unrelated baseline failures.",
+    "10. Before opening or updating the PR, run Codex review with the appropriate base, normally: codex review --base origin/main.",
+    "11. Open or update the PR only when the fix is ready for maintainer review. The PR body must link the issue and include proof, tests, Codex review, release/plugin/security notes when relevant, and any Mantis/ClawSweeper notes.",
+    "12. After opening/updating the PR, monitor CI and ClawSweeper. If checks fail, fix them and update the PR. If CI times out/flakes, rerun or make a harmless update only when that is the accepted OpenClaw process.",
+    "13. Do not stop just because the PR exists. Stop only when CI is green or failures are explained, Codex review has passed, proof is sufficient, and ClawSweeper/status labels indicate it is ready for maintainer look.",
+    "14. If proof is insufficient, required tooling is unavailable, the surface needs maintainer/security/product/reporter discussion, or Mantis is unavailable/broken when required, park the work with a short blocker note explaining what is missing.",
     "",
     "When finished, provide a short Discord-ready maintainer handoff: PR link, issue link, one-line summary, proof/tests, Codex review result, CI state, and ClawSweeper readiness.",
   ].join("\n");
+}
+
+function openClawProofModeInstruction(mode: OpenClawProofMode): string {
+  if (mode === "local") {
+    return "Prefer a local reproduction, focused regression test, or command-line proof. Use Crabbox or Mantis only if local proof cannot credibly prove the fix.";
+  }
+  if (mode === "crabbox") {
+    return "Plan on Crabbox/live validation before the PR is marked ready. Use the Crabbox wrapper to validate the reported branch/version, latest release, and current main where relevant. Park the issue if live proof is required and Crabbox is unavailable.";
+  }
+  if (mode === "testbox") {
+    return "Plan on Blacksmith Testbox validation through Crabbox before the PR is marked ready. Use it to prove whether the issue exists on the reported branch/version, latest release, and current main, then capture before/after evidence for the PR.";
+  }
+  if (mode === "mantis") {
+    return "Use or request Mantis proof if it is available. If Mantis is unavailable, collect the strongest local, Crabbox, or Blacksmith Testbox proof and park if that still is not enough.";
+  }
+  return "Choose the cheapest credible proof path after intake: local tests first, Crabbox or Blacksmith Testbox for environment/live behavior and cross-version validation, and Mantis when it is available and adds real evidence.";
+}
+
+function openClawPossibleCoveragePromptLines(coverage: OpenClawPrCoverage[]): string[] {
+  if (!coverage.length) return [];
+  return [
+    "Possible open PR coverage to inspect before coding:",
+    ...coverage.map((pr) => {
+      const draft = pr.draft ? "draft " : "";
+      const author = pr.author ? ` by @${pr.author}` : "";
+      return `- ${draft}PR #${pr.number}${author}: ${pr.title} (${pr.url}) - ${pr.reason}`;
+    }),
+    "If any listed PR already covers this issue, do not start a competing fix. Review that PR instead, or park this item with a short note.",
+    "",
+  ];
 }
 
 export function buildOpenClawDiscordHandoff(input: OpenClawHandoffInput): string {

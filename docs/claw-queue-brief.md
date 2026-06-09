@@ -24,26 +24,38 @@ Claw Queue turns that scattered process into one operating surface.
 It can:
 
 - show ClawSweeper-screened queueable issues in priority order,
-- prefer issues with no linked/open PR,
+- prefer issues with no linked/open PR and warn when recent open PRs appear to reference the same issue,
+- load a specific issue by URL or number when the user already knows what they want to inspect,
 - support contributor, trial-maintainer, and maintainer modes,
 - apply personal limits such as open PR count, worker count, usage budget, and minimum issue age,
+- choose a default Codex thinking mode, choose a proof route, and override both per issue before launch,
+- pass Tokenjuice output-compaction guidance to started workers and copy/paste prompts,
+- use Crabbox or Blacksmith Testbox for remote/cross-version validation when local proof is not enough,
 - generate a complete Codex-ready prompt for a selected issue,
+- open issue and PR context in a side GitHub blade while keeping the queue visible,
+- post or reuse a marker-backed issue claim comment before starting or tracking safe work,
 - connect to a local Codex bridge to start or track work,
 - track active work across Codex, tmux, local shells, or manual copy/paste,
+- show a short inline activity tail for bridge-managed Codex runs,
+- show a Master Loop swimlane view across ready issues, validation, coding, PR readiness, maintainer handoff, handoff sent, and completed work,
 - monitor authored PRs for CI, ClawSweeper readiness, proof labels, and Mantis visibility,
 - produce a short Discord-ready maintainer handoff when a PR is ready.
 
 The important shift is that the page is not only an issue picker. It tries to carry the work through the whole contribution loop.
 
-For data discovery, Claw Queue is moving toward the same pattern used elsewhere in the OpenClaw ecosystem: archive/cache first for broad issue and PR discovery, live GitHub only for final verification and mutations. The current app has GitHub Search caching and REST fallbacks for rate-limit cases; the next production-grade step is a Gitcrawl-backed snapshot source.
+For data discovery, Claw Queue follows the same pattern used elsewhere in the OpenClaw ecosystem: archive/cache first for broad issue and PR discovery, live GitHub only for final verification and mutations. The Worker still asks live GitHub for final state, but when the local Codex bridge is connected the page also reads a Gitcrawl workflow snapshot for broad queue rows, possible PR coverage, and authored open PR rows. The local snapshot is not final authority for bypassing live open-PR limits. The next production-grade step is a central Gitcrawl-backed snapshot source so hosted Crabfleet can do the same without relying on each user's local store.
 
 ## How The Workflow Feels
 
 The user starts in Command Center. If new work is allowed, it shows the next safest issue to pick. If work is already active, it helps resume or close out that plate instead. If limits, GitHub errors, usage budget, or worker capacity block new work, it says so directly.
 
-When a user starts or tracks an issue, Claw Queue keeps it in Active Work. Each active row can be resumed, linked to a PR, marked ready, parked, or archived. Worker Runway shows how many local plates are open based on the user's worker count, so running two or three parallel Codex jobs becomes visible rather than remembered in someone's head.
+Master Loop is the controller view at `/app/claw-loop`. It reads the same queue, active-work, PR, CI, proof, and ClawSweeper state and classifies every visible item into full-width swimlanes. In the current safe phase it observes, explains, and recommends the next action. Later phases can auto-move rows, generate handoffs, and start Codex workers within user limits.
 
-For users who cannot or do not want to start Codex directly from the page, Claw Queue still provides a copy/paste prompt. That prompt tells Codex to re-check the issue, read the current OpenClaw guidance, follow ClawSweeper, keep the fix focused, run tests, use Codex review, monitor CI, and stop only when the PR is genuinely ready for maintainer look.
+When a user starts or tracks an issue, Claw Queue uses the local bridge and the user's `gh` auth to post or find the "working on this" claim comment when the issue is safe to claim. If possible PR coverage is still unknown, Track records the investigation without pretending the issue is claimed. Each active row records the selected thinking mode, proof mode, and claim state, can be resumed, linked to a PR, marked ready, parked, or archived. For Start Codex runs, the local bridge creates a separate git worktree and branch per issue, then exposes that path in Active Work. Worker Runway shows how many local plates are open based on the user's worker count, so running two or three parallel Codex jobs becomes isolated and visible rather than remembered in someone's head.
+
+For users who cannot or do not want to start Codex directly from the page, Claw Queue still provides a copy/paste prompt. That prompt tells Codex to use Tokenjuice for noisy terminal output when available, re-check the issue and any possible PR coverage, read the current OpenClaw guidance, follow ClawSweeper, keep the fix focused, run tests, use Codex review, monitor CI, and stop only when the PR is genuinely ready for maintainer look.
+
+The prompt also carries maintainer-handbook guardrails. Release-sensitive work needs release-branch awareness, plugin install/update/SDK/package work needs maintainer discussion and broader contract validation, security-adjacent work should be escalated without public vulnerability metadata, and issues owned by another OpenClaw repo should be routed instead of patched in the wrong place. For a trial maintainer, the target outcome is evidence and a handoff, not merge authority.
 
 ## What Counts As Done
 

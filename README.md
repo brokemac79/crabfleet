@@ -10,7 +10,7 @@ Crabfleet gives OpenClaw maintainers a fleet dashboard where every Codex crabbox
 
 - **Fleet-first workflow.** Create repo-ready Crabboxes from the app, SSH, or the Go CLI and see org Codex instances grouped by person.
 - **Board-based workflow.** Create cards from prompts, GitHub issues, or PRs. Track them through Todo, Running, Human Review, and Done lanes.
-- **Claw Queue workflow.** Pick ClawSweeper-screened OpenClaw issues, hand them to local Codex, track parallel plates, and copy maintainer-ready handoffs.
+- **Claw Queue workflow.** Pick ClawSweeper-screened OpenClaw issues, choose Codex thinking mode, hand work to local Codex, track parallel plates, and copy maintainer-ready handoffs.
 - **Issue/PR lookup.** Type `#123` in search to preview matching GitHub issues or PRs across enabled OpenClaw repos and create a card from the match.
 - **Codex run control.** Start durable run attempts, track heartbeats, watch the Ghostty WASM session grid, and take over only when the selected runtime advertises that capability.
 - **Interactive Crabboxes.** Start a standalone Codex CLI workspace for manual cloud work and attach it in the same fullscreen Ghostty grid or WebVNC.
@@ -66,10 +66,19 @@ Add users/teams to the allowlist and enable repos:
 
 Open `/app/claw-queue` when you want OpenClaw issue triage instead of a generic board card.
 
-- Configure role, target repo, GitHub login, usage limit, worker count, and minimum issue age.
-- Connect the local Codex bridge with `pnpm openclaw:runner -- --workspace <path-to-openclaw> --port 4545 --max-active 2 --token <secret-token>`.
+- Configure role, target repo, GitHub login, usage limit, worker count, default Thinking mode, and minimum issue age.
+- Paste a specific GitHub issue URL or number when the issue you want is not shown in the queue.
+- Choose per-issue Thinking and Proof mode before copying a prompt, tracking manual work, or starting Codex.
+- Use Blade actions to inspect issue or PR GitHub pages in a side panel while keeping the queue, loop, or active-work context visible.
+- Connect the local Codex bridge with `pnpm openclaw:runner -- --workspace <path-to-openclaw> --worktree-dir <path-to-openclaw-worktrees> --port 4545 --max-active 2 --reasoning-effort high --token <secret-token>`.
+- Install Tokenjuice with `npm install -g tokenjuice` and `tokenjuice install codex` when you want started workers to compact noisy terminal output.
+- Start or safe Track posts a marker-backed "working on this" issue claim through your local `gh` auth before the Codex run is launched or recorded; coverage-investigation tracks do not pretend the issue is claimed.
 - Use Command Center first; it picks the next eligible issue, active plate, or blocked state.
-- Use Active Work to track parallel Codex/tmux/app sessions until each PR is ready, parked, or archived.
+- Use `/app/claw-loop` for the full-width Master Loop swimlanes across ready issues, validation, coding, PR readiness, handoff, and completed work.
+- Use Active Work to track parallel Codex/tmux/app sessions, copy each Codex worktree path, watch local run logs, and keep each PR visible until it is ready, parked, or archived.
+- When the local bridge is connected, Claw Queue can use Gitcrawl's local OpenClaw store for broad queue rows, possible PR coverage, authored open PR rows, and cached check hints while live GitHub remains the final source for claims, PR-limit gates, PR updates, and CI truth.
+- Start Codex runs include a bounded local skill packet from `%USERPROFILE%\.codex\skills` and the common OpenClaw maintainer skills checkout by default, so workers know where the relevant OpenClaw, Gitcrawl, Tokenjuice, Crabbox, ClawSweeper, PR review, security, CI, and Codex review skills live on the machine.
+- For loopback-only local preview without GitHub OAuth or a bootstrap token, set `CRABFLEET_DEV_IDENTITY=1` so the login screen shows the Dev Identity Apply panel.
 
 See [Claw Queue docs](docs/claw-queue.md).
 

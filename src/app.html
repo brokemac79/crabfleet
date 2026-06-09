@@ -223,6 +223,14 @@
         border-color: var(--primary);
         box-shadow: 0 0 0 3px rgb(94 106 210 / 0.12);
       }
+      select option {
+        background: #ffffff;
+        color: #111827;
+      }
+      select option:checked {
+        background: var(--primary);
+        color: #ffffff;
+      }
       textarea {
         min-height: 80px;
         resize: vertical;
@@ -288,6 +296,48 @@
       .help-dot:focus-visible::after {
         opacity: 1;
         transform: translate(-50%, 0);
+      }
+      .candidate-select {
+        min-width: 132px;
+        min-height: 34px;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel-2);
+        color: var(--muted);
+        padding: 0 9px;
+      }
+      .proof-select {
+        min-width: 152px;
+      }
+      .candidate-select svg {
+        flex: 0 0 auto;
+        width: 15px;
+        height: 15px;
+      }
+      .candidate-select select {
+        min-width: 88px;
+        height: 30px;
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+        color: var(--ink);
+        padding: 0;
+        font-size: 12px;
+        font-weight: 750;
+      }
+      .candidate-select select option {
+        background: #ffffff;
+        color: #111827;
+      }
+      .proof-select select {
+        min-width: 106px;
+      }
+      .candidate-select select:focus {
+        box-shadow: none;
+        outline: 0;
       }
       a {
         color: var(--primary);
@@ -696,6 +746,9 @@
         width: min(1060px, calc(100vw - 48px));
         margin: 0 auto;
         padding: 34px 0 56px;
+      }
+      .shell.wide {
+        width: min(1760px, calc(100vw - 48px));
       }
       .top {
         display: grid;
@@ -1411,6 +1464,110 @@
         overflow: auto;
         padding: 20px;
       }
+      .github-blade {
+        position: fixed;
+        inset: 0;
+        z-index: 35;
+        display: none;
+        justify-content: end;
+        background: rgb(0 0 0 / 0.32);
+        backdrop-filter: blur(5px);
+      }
+      .github-blade.open {
+        display: grid;
+      }
+      .github-blade-panel {
+        width: min(780px, calc(100vw - 32px));
+        height: 100%;
+        display: grid;
+        grid-template-rows: auto auto auto minmax(0, 1fr);
+        border-left: 1px solid var(--line);
+        background: var(--panel);
+        box-shadow: var(--shadow-xl);
+        overflow: hidden;
+      }
+      .github-blade-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: start;
+        padding: 18px 20px;
+        border-bottom: 1px solid var(--line);
+      }
+      .github-blade-head h2 {
+        min-width: 0;
+        overflow: hidden;
+        margin: 5px 0 0;
+        color: var(--ink);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 19px;
+        font-weight: 760;
+      }
+      .github-blade-head p {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .github-blade-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 12px 20px;
+        border-bottom: 1px solid var(--line);
+      }
+      .github-blade-actions button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+      }
+      .github-blade-url {
+        overflow: hidden;
+        padding: 10px 20px;
+        border-bottom: 1px solid var(--line);
+        color: var(--muted);
+      }
+      .github-blade-url code {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .github-blade-frame-wrap {
+        position: relative;
+        min-height: 0;
+        background: var(--panel-2);
+      }
+      .github-blade-frame-wrap iframe {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        width: 100%;
+        height: 100%;
+        border: 0;
+        background: #ffffff;
+      }
+      .github-blade-fallback {
+        position: absolute;
+        right: 18px;
+        bottom: 18px;
+        left: 18px;
+        z-index: 2;
+        display: grid;
+        place-content: center start;
+        justify-items: center;
+        gap: 6px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgb(0 0 0 / 0.72);
+        color: var(--muted);
+        padding: 10px 12px;
+        font-size: 13px;
+      }
+      .github-blade-fallback strong {
+        color: var(--ink);
+      }
       .form-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -1975,6 +2132,9 @@
         display: grid;
         gap: 18px;
       }
+      .openclaw-loop-page {
+        gap: 16px;
+      }
       .openclaw-toolbar {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
@@ -2016,9 +2176,13 @@
         border-color: rgb(239 68 68 / 0.34);
         background: rgb(239 68 68 / 0.1);
       }
+      .workflow-banner.local-snapshot {
+        border-color: rgb(16 185 129 / 0.34);
+        background: rgb(16 185 129 / 0.08);
+      }
       .openclaw-command-center {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(210px, 0.28fr);
+        grid-template-columns: minmax(0, 1fr) minmax(260px, 0.34fr);
         grid-template-areas:
           "main actions"
           "gates gates";
@@ -2103,9 +2267,26 @@
       .command-actions {
         grid-area: actions;
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(2, minmax(112px, 1fr));
         gap: 8px;
         align-content: center;
+        min-width: 0;
+      }
+      .command-mode-controls {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 8px;
+        min-width: 0;
+      }
+      .command-mode-controls .candidate-select {
+        min-width: 0;
+        width: 100%;
+      }
+      .command-mode-controls .candidate-select select {
+        min-width: 0;
+        flex: 1 1 auto;
+        padding-right: 18px;
       }
       .command-actions button {
         min-height: 34px;
@@ -2115,6 +2296,9 @@
         gap: 7px;
         padding: 0 10px;
         white-space: nowrap;
+      }
+      .command-actions .candidate-select {
+        width: 100%;
       }
       .command-gates {
         grid-area: gates;
@@ -2180,6 +2364,9 @@
       .openclaw-settings.skeleton {
         color: var(--muted);
         font-size: 13px;
+      }
+      .openclaw-settings .settings-error {
+        grid-column: 1 / -1;
       }
       .openclaw-runner {
         display: grid;
@@ -2344,6 +2531,166 @@
       .worker-lane-empty svg {
         width: 28px;
         height: 28px;
+      }
+      .openclaw-loop-panel {
+        display: grid;
+        gap: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--dashboard-surface);
+        padding: 14px;
+      }
+      .openclaw-loop-panel h2 {
+        margin: 5px 0 0;
+        color: var(--ink);
+        font-size: 18px;
+        font-weight: 720;
+      }
+      .openclaw-loop-panel header p {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .loop-head-actions {
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .loop-head-actions button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        white-space: nowrap;
+      }
+      .loop-decision {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 12px;
+      }
+      .loop-decision > div:first-child {
+        min-width: 0;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 8px;
+        align-items: center;
+      }
+      .loop-decision strong {
+        color: var(--ink);
+        font-size: 14px;
+      }
+      .loop-decision p {
+        grid-column: 2;
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .loop-gates {
+        display: inline-flex;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .loop-swimlanes {
+        display: grid;
+        grid-template-columns: repeat(7, minmax(220px, 1fr));
+        gap: 12px;
+        overflow-x: auto;
+        padding-bottom: 4px;
+      }
+      .loop-lane {
+        min-width: 220px;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        gap: 10px;
+        align-content: start;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 10px;
+      }
+      .loop-lane.ok {
+        border-color: rgb(16 185 129 / 0.22);
+      }
+      .loop-lane.warn {
+        border-color: rgb(245 158 11 / 0.28);
+      }
+      .loop-lane header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: start;
+      }
+      .loop-lane strong {
+        display: block;
+        color: var(--ink);
+        font-size: 12px;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+      }
+      .loop-lane header span:not(.chip) {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.35;
+      }
+      .loop-lane-items {
+        display: grid;
+        align-content: start;
+        gap: 7px;
+      }
+      .loop-card {
+        min-width: 0;
+        display: grid;
+        gap: 5px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--panel-2);
+        color: var(--ink);
+        padding: 8px;
+      }
+      .loop-card:hover {
+        border-color: var(--line-strong);
+        color: var(--ink);
+      }
+      .loop-card strong {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .loop-card small {
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.35;
+      }
+      .loop-card-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+      }
+      .loop-card-actions button {
+        min-height: 28px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        padding: 0 7px;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      .loop-card-actions button svg {
+        width: 13px;
+        height: 13px;
       }
       .openclaw-active-work {
         display: grid;
@@ -2553,6 +2900,23 @@
       }
       .active-work-next {
         color: var(--ink);
+      }
+      .active-work-activity {
+        display: grid;
+        gap: 4px;
+        max-width: 720px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: rgb(15 23 42 / 0.34);
+        padding: 7px;
+      }
+      .active-work-activity code {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--muted);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 11px;
       }
       .active-work-checklist {
         display: flex;
@@ -2801,6 +3165,16 @@
         gap: 10px;
         align-items: start;
       }
+      .queue-head-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .queue-head-actions .icon-only,
+      .pr-row-head .icon-only {
+        width: 34px;
+        padding: 0;
+      }
       .queue-head h3 {
         margin: 0;
         color: var(--ink);
@@ -2848,7 +3222,7 @@
         gap: 6px;
       }
       .candidate-main a,
-      .pr-row > a {
+      .pr-row-head a {
         min-width: 0;
         overflow: hidden;
         color: var(--ink);
@@ -2870,7 +3244,7 @@
         flex-wrap: wrap;
         max-width: 470px;
       }
-      .candidate-actions button:first-child {
+      .candidate-actions button.icon-only {
         width: 36px;
         padding: 0;
       }
@@ -2898,8 +3272,62 @@
         background: var(--dashboard-surface);
         padding: 14px;
       }
+      .specific-issue-panel {
+        display: grid;
+        gap: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--dashboard-surface);
+        padding: 14px;
+      }
+      .specific-issue-form {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: end;
+      }
+      .specific-issue-form button {
+        min-height: 38px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        white-space: nowrap;
+      }
+      .specific-issue-row {
+        background: var(--panel);
+      }
+      .coverage-warning {
+        display: flex;
+        align-items: flex-start;
+        gap: 7px;
+        max-width: 680px;
+        border: 1px solid rgb(239 68 68 / 0.28);
+        border-radius: 8px;
+        background: rgb(239 68 68 / 0.08);
+        color: var(--muted);
+        padding: 8px 10px;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .coverage-warning svg {
+        flex: 0 0 auto;
+        width: 15px;
+        height: 15px;
+        color: #f87171;
+      }
+      .coverage-warning a {
+        color: #fb7185;
+        font-weight: 750;
+      }
       .pr-row {
         background: var(--panel);
+      }
+      .pr-row-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
       }
       .handoff-box {
         margin-top: 4px;
@@ -2976,8 +3404,11 @@
             "gates";
         }
         .command-actions {
-          grid-template-columns: repeat(4, minmax(0, max-content));
+          grid-template-columns: repeat(4, minmax(112px, max-content));
           justify-content: start;
+        }
+        .command-mode-controls {
+          grid-template-columns: repeat(2, minmax(156px, max-content));
         }
         .active-work-mission {
           grid-template-columns: minmax(0, 1fr) minmax(220px, 0.7fr);
@@ -3097,6 +3528,9 @@
         .command-gates {
           grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
         }
+        .command-mode-controls {
+          grid-template-columns: 1fr;
+        }
         .command-actions button {
           width: 100%;
         }
@@ -3148,10 +3582,17 @@
           min-width: 118px;
           width: auto;
         }
-        .candidate-actions button:first-child {
+        .candidate-actions button.icon-only {
           flex: 0 0 40px;
           width: 40px;
           min-width: 40px;
+        }
+        .specific-issue-form {
+          grid-template-columns: 1fr;
+        }
+        .candidate-actions .candidate-select,
+        .worker-lane-actions .candidate-select {
+          width: 100%;
         }
         .active-work-detail {
           justify-items: stretch;

@@ -5,13 +5,17 @@ import {
   buildOpenClawIssuePrompt,
   buildOpenClawIssueSearchQuery,
   evaluateOpenClawGovernor,
+  normalizeGitHubLogin,
   openClawCandidateMatchesQueue,
   normalizeOpenClawPreferences,
   openClawCandidatePriorityLabel,
   openClawCandidatePriorityRank,
   openClawIssueSignals,
+  openClawProofModeLabel,
   openClawPrSignals,
   queuesForOpenClawRole,
+  summarizeOpenClawChecks,
+  unknownOpenClawCheckSummary,
   type OpenClawWorkflowPreferences,
 } from "../src/openclaw-workflow.ts";
 
@@ -72,6 +76,17 @@ test("issue signals block linked PRs, no-new-fix labels, and too-new issues", ()
   assert.equal(linked.linkedPr, true);
   assert.equal(tooNew.readyForPickup, false);
   assert.equal(tooNew.ageGate, "too-new");
+});
+
+test("issue signals treat needs-live-repro as a live proof hint", () => {
+  const signals = openClawIssueSignals(
+    ["clawsweeper:queueable-fix", "clawsweeper:needs-live-repro"],
+    "2026-06-02T12:00:00Z",
+    now,
+  );
+
+  assert.equal(signals.needsLiveValidation, true);
+  assert.equal(signals.readyForPickup, true);
 });
 
 test("issue age gate can be lowered for fork testing", () => {
@@ -157,6 +172,7 @@ test("governor pauses new work at personal PR and usage limits", () => {
     weeklyRemainingBaseline: 97,
     weeklyRemainingCurrent: 91,
     dailyUsageDropLimit: 5,
+    usageWindowStartedAt: now - 60 * 60 * 1000,
   });
 
   const governor = evaluateOpenClawGovernor(preferences, 10, now);
@@ -165,6 +181,24 @@ test("governor pauses new work at personal PR and usage limits", () => {
   assert.equal(governor.usageDrop, 6);
   assert.match(governor.reasons.join(" "), /Personal open PR limit/);
   assert.match(governor.reasons.join(" "), /Usage budget/);
+});
+
+test("governor does not pause usage budgets without a started window", () => {
+  const preferences = basePreferences({
+    weeklyRemainingBaseline: 97,
+    weeklyRemainingCurrent: 90,
+    dailyUsageDropLimit: 5,
+    usageWindowStartedAt: null,
+  });
+
+  const governor = evaluateOpenClawGovernor(preferences, 2, now);
+
+  assert.equal(governor.canStartNewWork, true);
+  assert.equal(governor.usageDrop, 7);
+  assert.equal(
+    governor.reasons.some((reason) => /Usage budget/.test(reason)),
+    false,
+  );
 });
 
 test("governor does not keep an expired usage window paused forever", () => {
@@ -196,6 +230,84 @@ test("PR signals identify ready-for-maintainer handoff state", () => {
   assert.equal(signals.mergeReady, true);
 });
 
+test("check summary uses the newest run per check name", () => {
+  const signals = openClawPrSignals(["status: ready for maintainer look"]);
+  const checks = summarizeOpenClawChecks(
+    [
+      {
+        name: "Real behavior proof",
+        status: "completed",
+        conclusion: "failure",
+        completed_at: "2026-06-05T10:00:00Z",
+      },
+      {
+        name: "Real behavior proof",
+        status: "completed",
+        conclusion: "success",
+        completed_at: "2026-06-05T11:00:00Z",
+      },
+      {
+        name: "checks-node-agentic-plugin-sdk",
+        status: "completed",
+        conclusion: "success",
+        completed_at: "2026-06-05T11:05:00Z",
+      },
+    ],
+    { state: "pending", statuses: [] },
+    signals,
+  );
+
+  assert.equal(checks.state, "green");
+  assert.deepEqual(checks.failing, []);
+  assert.equal(checks.total, 2);
+});
+
+test("check summary keeps newer queued duplicate runs pending", () => {
+  const checks = summarizeOpenClawChecks(
+    [
+      {
+        name: "unit tests",
+        status: "completed",
+        conclusion: "success",
+        completed_at: "2026-06-05T11:00:00Z",
+      },
+      {
+        name: "unit tests",
+        status: "queued",
+        conclusion: null,
+        created_at: "2026-06-05T11:05:00Z",
+      },
+    ],
+    null,
+    { mantisRequested: false },
+  );
+
+  assert.equal(checks.state, "pending");
+  assert.deepEqual(checks.pending, ["unit tests"]);
+});
+
+test("check summary still works when only one GitHub checks endpoint has data", () => {
+  const signals = openClawPrSignals([]);
+
+  const checkRunsOnly = summarizeOpenClawChecks(
+    [
+      {
+        name: "unit tests",
+        status: "completed",
+        conclusion: "success",
+        completed_at: "2026-06-05T11:00:00Z",
+      },
+    ],
+    null,
+    signals,
+  );
+  const combinedOnly = summarizeOpenClawChecks([], { state: "success", statuses: [] }, signals);
+
+  assert.equal(checkRunsOnly.state, "green");
+  assert.equal(combinedOnly.state, "green");
+  assert.equal(unknownOpenClawCheckSummary(signals).state, "unknown");
+});
+
 test("issue prompt carries the OpenClaw fix process into Codex", () => {
   const prompt = buildOpenClawIssuePrompt({
     number: 99,
@@ -216,9 +328,141 @@ test("issue prompt carries the OpenClaw fix process into Codex", () => {
   assert.match(prompt, /CONTRIBUTING\.md/);
   assert.match(prompt, /AGENTS\.md/);
   assert.match(prompt, /codex review --base origin\/main/);
+  assert.match(prompt, /model_reasoning_effort="high"/);
+  assert.match(prompt, /Mode: Auto proof/);
+  assert.match(prompt, /Tokenjuice/);
+  assert.match(prompt, /tokenjuice doctor hooks/);
+  assert.match(prompt, /contributor\/trial-maintainer posture/);
+  assert.match(prompt, /release-branch awareness/);
+  assert.match(prompt, /plugin install\/update\/SDK\/package behavior/);
+  assert.match(prompt, /security-adjacent auth/);
+  assert.match(prompt, /target repo owns the surface/);
   assert.match(prompt, /monitor CI and ClawSweeper/);
   assert.match(prompt, /ready for maintainer look/);
   assert.match(prompt, /Discord-ready maintainer handoff/);
+
+  const extraHighPrompt = buildOpenClawIssuePrompt(
+    {
+      number: 100,
+      title: "Queue guard needs deeper investigation",
+      url: "https://github.com/openclaw/openclaw/issues/100",
+      author: "reporter",
+      createdAt: "2026-06-02T12:00:00Z",
+      updatedAt: "2026-06-03T12:00:00Z",
+      labels: ["P0", "clawsweeper:queueable-fix"],
+      queueId: "maintainer-p0",
+      signals: openClawIssueSignals(
+        ["P0", "clawsweeper:queueable-fix"],
+        "2026-06-02T12:00:00Z",
+        now,
+      ),
+    },
+    { codexReasoningEffort: "xhigh", proofMode: "crabbox" },
+  );
+  assert.match(extraHighPrompt, /model_reasoning_effort="xhigh"/);
+  assert.match(extraHighPrompt, /Extra high/);
+  assert.match(extraHighPrompt, /Mode: Crabbox proof/);
+  assert.equal(openClawProofModeLabel("mantis"), "Mantis if available");
+});
+
+test("issue prompt warns about possible open PR coverage", () => {
+  const prompt = buildOpenClawIssuePrompt(
+    {
+      number: 90157,
+      title: "Fix queue candidate",
+      url: "https://github.com/openclaw/openclaw/issues/90157",
+      author: "reporter",
+      createdAt: "2026-06-02T12:00:00Z",
+      updatedAt: "2026-06-03T12:00:00Z",
+      labels: ["P1", "clawsweeper:queueable-fix"],
+      queueId: "specific-issue",
+      signals: openClawIssueSignals(
+        ["P1", "clawsweeper:queueable-fix"],
+        "2026-06-02T12:00:00Z",
+        now,
+      ),
+      possiblePrCoverage: [
+        {
+          number: 90339,
+          title: "Fix same issue",
+          url: "https://github.com/openclaw/openclaw/pull/90339",
+          author: "alice",
+          draft: true,
+          updatedAt: "2026-06-03T13:00:00Z",
+          reason: "PR text mentions #90157",
+        },
+      ],
+    },
+    { proofMode: "mantis" },
+  );
+
+  assert.match(prompt, /Possible open PR coverage/);
+  assert.match(prompt, /PR #90339/);
+  assert.match(prompt, /do not start a competing fix/i);
+  assert.match(prompt, /Mode: Mantis if available/);
+});
+
+test("issue prompt warns when PR coverage is unresolved", () => {
+  const prompt = buildOpenClawIssuePrompt({
+    number: 90158,
+    title: "Fix coverage unknown candidate",
+    url: "https://github.com/openclaw/openclaw/issues/90158",
+    author: "reporter",
+    createdAt: "2026-06-02T12:00:00Z",
+    updatedAt: "2026-06-03T12:00:00Z",
+    labels: ["P1", "clawsweeper:queueable-fix"],
+    queueId: "specific-issue",
+    signals: openClawIssueSignals(["P1", "clawsweeper:queueable-fix"], "2026-06-02T12:00:00Z", now),
+    prCoverageUnknown: true,
+    prCoverageWarning: "Possible PR coverage lookup failed",
+  });
+
+  assert.match(prompt, /coverage lookup did not complete/);
+  assert.match(prompt, /do not start a competing fix/i);
+});
+
+test("issue prompt skips duplicate claim comments when Claw Queue already claimed", () => {
+  const prompt = buildOpenClawIssuePrompt(
+    {
+      number: 90315,
+      title: "Gateway catalog drops Ollama capabilities",
+      url: "https://github.com/openclaw/openclaw/issues/90315",
+      author: "reporter",
+      createdAt: "2026-06-02T12:00:00Z",
+      updatedAt: "2026-06-03T12:00:00Z",
+      labels: ["P2", "clawsweeper:queueable-fix"],
+      queueId: "maintainer-p2",
+      signals: openClawIssueSignals(
+        ["P2", "clawsweeper:queueable-fix"],
+        "2026-06-02T12:00:00Z",
+        now,
+      ),
+    },
+    { claimCommentStatus: "posted" },
+  );
+
+  assert.match(prompt, /already posted or found the issue claim comment/);
+  assert.match(prompt, /Do not post a duplicate claim comment/);
+
+  const bridgeManagedPrompt = buildOpenClawIssuePrompt(
+    {
+      number: 90316,
+      title: "Bridge handles claim before Codex starts",
+      url: "https://github.com/openclaw/openclaw/issues/90316",
+      author: "reporter",
+      createdAt: "2026-06-02T12:00:00Z",
+      updatedAt: "2026-06-03T12:00:00Z",
+      labels: ["P2", "clawsweeper:queueable-fix"],
+      queueId: "maintainer-p2",
+      signals: openClawIssueSignals(
+        ["P2", "clawsweeper:queueable-fix"],
+        "2026-06-02T12:00:00Z",
+        now,
+      ),
+    },
+    { claimCommentStatus: "bridge-managed" },
+  );
+  assert.match(bridgeManagedPrompt, /Do not post a duplicate claim comment/);
 });
 
 test("Discord handoff stays short and includes Codex review", () => {
@@ -246,6 +490,7 @@ test("preferences normalize repo, limits, role, and login", () => {
       activeOpenPrLimit: 99,
       maxParallelWorkers: 0,
       minimumIssueAgeHours: Number.NaN,
+      codexReasoningEffort: "xhigh",
       weeklyRemainingBaseline: 97,
     },
     basePreferences(),
@@ -256,10 +501,49 @@ test("preferences normalize repo, limits, role, and login", () => {
   assert.equal(normalized.activeOpenPrLimit, 20);
   assert.equal(normalized.maxParallelWorkers, 1);
   assert.equal(normalized.minimumIssueAgeHours, 6);
+  assert.equal(normalized.codexReasoningEffort, "xhigh");
   assert.equal(normalized.weeklyRemainingBaseline, 97);
 
-  const testMode = normalizeOpenClawPreferences({ minimumIssueAgeHours: 0 }, basePreferences());
+  const testMode = normalizeOpenClawPreferences(
+    { minimumIssueAgeHours: 0, codexReasoningEffort: "turbo" as any },
+    basePreferences(),
+  );
   assert.equal(testMode.minimumIssueAgeHours, 0);
+  assert.equal(testMode.codexReasoningEffort, "high");
+
+  assert.equal(normalizeGitHubLogin(" BrokeMac79 "), "brokemac79");
+  assert.equal(normalizeGitHubLogin("octocat repo:other/private"), "");
+  const injectedLogin = normalizeOpenClawPreferences(
+    { githubLogin: "octocat repo:other/private" },
+    basePreferences(),
+  );
+  assert.equal(injectedLogin.githubLogin, "brokemac79");
+});
+
+test("partial preferences preserve existing usage budget fields", () => {
+  const fallback = basePreferences({
+    weeklyRemainingBaseline: 97,
+    weeklyRemainingCurrent: 92,
+    usageWindowStartedAt: now - 60 * 60 * 1000,
+  });
+  const unrelated = normalizeOpenClawPreferences({ minimumIssueAgeHours: 0 }, fallback);
+
+  assert.equal(unrelated.minimumIssueAgeHours, 0);
+  assert.equal(unrelated.weeklyRemainingBaseline, 97);
+  assert.equal(unrelated.weeklyRemainingCurrent, 92);
+  assert.equal(unrelated.usageWindowStartedAt, fallback.usageWindowStartedAt);
+
+  const cleared = normalizeOpenClawPreferences(
+    {
+      weeklyRemainingBaseline: null,
+      weeklyRemainingCurrent: null,
+      usageWindowStartedAt: null,
+    },
+    fallback,
+  );
+  assert.equal(cleared.weeklyRemainingBaseline, null);
+  assert.equal(cleared.weeklyRemainingCurrent, null);
+  assert.equal(cleared.usageWindowStartedAt, null);
 });
 
 function basePreferences(
@@ -275,6 +559,7 @@ function basePreferences(
     dailyUsageDropLimit: 5,
     maxParallelWorkers: 2,
     minimumIssueAgeHours: 6,
+    codexReasoningEffort: "high",
     weeklyRemainingBaseline: null,
     weeklyRemainingCurrent: null,
     usageWindowStartedAt: now,

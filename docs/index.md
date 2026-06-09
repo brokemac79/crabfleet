@@ -33,7 +33,7 @@ The web app at [clawfleet.openclaw.ai/app](https://clawfleet.openclaw.ai/app/) e
 - **SSH-first onboarding.** Connect through `ssh link@crabd.sh`, complete GitHub sign-in, then use linked-key auth.
 - **Crabbox control.** Create, attach, share, open WebVNC, and clean up interactive Codex sessions backed by Ghostty WASM tiles.
 - **Fleet visibility.** The app groups all org Codex instances by person so OpenClaw can supervise live work.
-- **Claw Queue.** Trial maintainers and contributors can pick ClawSweeper-screened issues, hand them to local Codex, track parallel plates, and copy maintainer handoffs.
+- **Claw Queue.** Trial maintainers and contributors can pick ClawSweeper-screened issues or paste a specific issue, choose Codex thinking and proof mode, hand work to local Codex, track parallel plates, and copy maintainer handoffs.
 - **Repo-gated cards.** Prompt cards and GitHub issue/PR previews stay scoped to enabled OpenClaw repos.
 - **Runtime policy.** Crabfleet records runtime selection, capabilities, heartbeat, stall state, and operator intent.
 - **Admin guardrails.** User/team allowlists, repo allowlists, roles, caps, and `CRABBOX.md` workflow evaluation live in the dashboard.
@@ -49,7 +49,7 @@ The web app at [clawfleet.openclaw.ai/app](https://clawfleet.openclaw.ai/app/) e
 - Durable run attempts with heartbeat, stall handling, operator, runtime reason, and capabilities.
 - Ghostty WASM fullscreen session grid with D1 event replay, live multiplex PTY attach, WebVNC links for Crabbox leases, and text fallback.
 - Card diff metadata and compact patch view.
-- Claw Queue command center, worker runway, active-work radar, local Codex bridge integration, and PR handoff generator.
+- Claw Queue command center, specific issue intake, worker runway, active-work radar, local Codex bridge integration, local run-log viewer, PR-coverage warnings, and PR handoff generator.
 - Owner workflow evaluation for repo `CRABBOX.md`.
 - Worker-served docs at `/docs/` and generated docs at `docs.crabfleet.ai`.
 

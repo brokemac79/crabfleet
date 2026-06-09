@@ -141,11 +141,27 @@ Optional query parameters:
 
 Response includes:
 
-- `preferences`: role, repo, GitHub login, worker count, usage limits, and issue age gate.
-- `queues`: ClawSweeper-screened queue definitions, search queries, candidates, totals, and per-queue errors.
+- `preferences`: role, repo, GitHub login, worker count, Codex reasoning effort, usage limits, and issue age gate.
+- `queues`: ClawSweeper-screened queue definitions, search queries, candidates, totals, per-queue errors, and candidate `possiblePrCoverage` warnings when recent open PRs directly reference an issue.
 - `pullRequests`: authored open PR summaries with CI and ClawSweeper signals.
 - `governor`: whether new work can start, plus open PR and usage-limit reasons.
 - `process`: links to OpenClaw contributing files and maintainer guardrails.
+
+### GET /api/openclaw/issue
+
+Viewer+. Loads one specific OpenClaw issue by URL, `#number`, or number. Use this when the issue is not currently visible in the queue.
+
+Optional query parameters:
+
+- `input`: required issue URL, `#number`, or number.
+- `repo`: normalized `owner/repo` fallback for plain numbers.
+
+Response includes:
+
+- `repo`: repo used for the lookup.
+- `issueNumber`: loaded issue number.
+- `candidate`: the same candidate shape used by queue rows, including labels, ClawSweeper readiness, age gate, generated prompt, and `possiblePrCoverage`.
+- `coverageError`: warning text when the possible PR coverage scan was partial or failed.
 
 ### PUT /api/openclaw/preferences
 
@@ -159,6 +175,7 @@ Viewer+. Saves the current user's Claw Queue preferences.
   "activeOpenPrLimit": 10,
   "dailyUsageDropLimit": 5,
   "maxParallelWorkers": 2,
+  "codexReasoningEffort": "high",
   "minimumIssueAgeHours": 6,
   "weeklyRemainingBaseline": 97,
   "weeklyRemainingCurrent": 92
@@ -191,9 +208,13 @@ Bridge endpoints:
 GET /health
 GET /runs
 GET /runs/:id
+GET /runs/:id/log
 PATCH /runs/:id
+POST /claim
 POST /start
 POST /track
+POST /gitcrawl/coverage
+POST /gitcrawl/workflow
 ```
 
 Every bridge request requires:
@@ -205,10 +226,40 @@ Authorization: Bearer <runner-token>
 Start the bridge from the repo checkout:
 
 ```bash
-pnpm openclaw:runner -- --workspace <path-to-openclaw> --port 4545 --max-active 2 --token <secret-token>
+pnpm openclaw:runner -- --workspace <path-to-openclaw> --worktree-dir <path-to-openclaw-worktrees> --port 4545 --max-active 2 --reasoning-effort high --token <secret-token>
 ```
 
 Add `--dry-run` to record prompts and Active Work rows without launching Codex.
+
+`--reasoning-effort` can also be provided with `OPENCLAW_CODEX_REASONING_EFFORT`. The default is `high`.
+
+By default the bridge scans `%USERPROFILE%\.codex\skills` plus the common OpenClaw maintainer skills checkout at `%LOCALAPPDATA%\OpenClawMaintainer\repos\maintainers\.agents\skills`, then injects a bounded list of relevant local `SKILL.md` paths into every `/start` prompt. Use `--skills-dir <path>` or `OPENCLAW_CODEX_SKILLS_DIR` to override the primary Codex skill location. Use `--maintainer-skills-dir <path>`, `OPENCLAW_MAINTAINER_SKILLS_DIR`, or `OPENCLAW_MAINTAINERS_DIR` to point at a different maintainer checkout. Use `--no-skill-context` to disable the skill packet.
+
+The bridge also reports and injects the resolved Tokenjuice command for output compaction. Use `--tokenjuice-bin <path>` or `TOKENJUICE_BIN` if `tokenjuice` is not on `PATH`. Workers should use `tokenjuice doctor hooks` to verify hook health and `tokenjuice wrap --raw -- <command>` when exact raw output is required.
+
+`GET /health` reports `defaultReasoningEffort`, `baseWorkspace`, `worktreeDir`, `worktreeBase`, and `tokenjuiceCommand`. `GET /runs` and `GET /runs/:id` include each run's `codexReasoningEffort`, `proofMode`, `baseWorkspace`, `worktreePath`, and `worktreeBranch` when known.
+
+For `/start`, `--workspace` is treated as the clean base checkout. The bridge creates a unique git worktree and branch for each Codex process, then launches Codex inside that worktree. This keeps parallel starts isolated from each other. `/track` records external/manual work and does not create a worktree.
+
+`POST /claim` accepts `{ "repo": "owner/repo", "issueNumber": 123, "issueUrl": "https://github.com/owner/repo/issues/123", "title": "Issue title" }`. It uses the local `gh` CLI to post a marker-backed issue comment, or returns the existing marker-backed claim if the same bridge/user already claimed that issue. Claw Queue calls this before `/start` and `/track`, then stores `claimCommentStatus` and `claimCommentUrl` on the run.
+
+`POST /gitcrawl/coverage` accepts `{ "repo": "owner/repo", "issueNumbers": [123] }` and returns local Gitcrawl snapshot PR coverage for displayed issues. It checks open PR titles and indexed excerpts, so Codex prompts still tell workers to re-check GitHub before coding.
+
+`POST /gitcrawl/workflow` accepts `{ "repo": "owner/repo", "githubLogin": "user", "roleMode": "trial_maintainer", "minimumIssueAgeHours": 6 }` and returns one local Gitcrawl snapshot for Claw Queue broad reads:
+
+- queue definitions and candidates for the selected role,
+- possible open PR coverage for those candidates,
+- authored open PR rows and any cached check rows for the configured login,
+- snapshot metadata including `lastSyncAt`.
+
+The browser prefers this snapshot for broad queue/coverage reads when the local bridge is connected, then keeps live GitHub data for final issue state, claim comments, PR-limit gates, PR updates, and CI truth. Set `OPENCLAW_GITCRAWL_DB_PATH` on the bridge to point directly at a Gitcrawl SQLite store; otherwise the bridge runs `gitcrawl doctor --json` and caches the result briefly.
+
+`POST /start` and `POST /track` accept:
+
+- `codexReasoningEffort`: `low`, `medium`, `high`, or `xhigh`.
+- `proofMode`: `auto`, `local`, `crabbox`, `testbox`, or `mantis`.
+
+The bridge records both values on the run. `/start` launches Codex with `model_reasoning_effort="<value>"`; `/track` only records the manually started work. Omitted or invalid reasoning values fall back to `high` or the bridge's `--reasoning-effort` default. Omitted or invalid proof modes fall back to `auto`.
 
 ## Cards
 

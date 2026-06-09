@@ -1,10 +1,14 @@
-import { render } from "preact";
+import { Fragment, render } from "preact";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { api } from "./api.js";
 import {
   buildOpenClawIssuePrompt,
   openClawCandidatePriorityLabel,
   openClawCandidatePriorityRank,
+  openClawProofModeLabel,
+  openClawProofModes,
+  openClawReasoningEffortLabel,
+  openClawReasoningEfforts,
 } from "../openclaw-workflow.ts";
 import {
   canMaintain,
@@ -44,6 +48,7 @@ const skipAutoGithubLoginKey = "crabbox-skip-auto-github-login";
 const githubAutoLoginReadyKey = "crabbox-github-auto-login-ready";
 const sessionLayoutStorageKey = "crabbox-session-layout-v1";
 const clawQueuePath = "/app/claw-queue";
+const clawLoopPath = "/app/claw-loop";
 const openClawRunnerUrlStorageKey = "crabbox-openclaw-runner-url";
 const openClawRunnerTokenStorageKey = "crabbox-openclaw-runner-token";
 const defaultOpenClawRunnerUrl = "http://127.0.0.1:4545";
@@ -106,6 +111,7 @@ function App() {
   );
   const [sessionLayout, setSessionLayout] = useState(loadSessionLayout);
   const [terminalStatus, setTerminalStatus] = useState({});
+  const [githubBlade, setGithubBlade] = useState(null);
   const [openClawState, setOpenClawState] = useState({
     loading: false,
     data: null,
@@ -120,6 +126,7 @@ function App() {
   const focusedSessionIdRef = useRef(focusedSessionId);
   const drawersRef = useRef(drawers);
   const sharedRef = useRef({ id: sharedSessionId, token: sharedToken });
+  const githubBladeRef = useRef(githubBlade);
   const stateRetryTimer = useRef(null);
   const refPreviewTimer = useRef(null);
   const refPreviewSeq = useRef(0);
@@ -141,6 +148,7 @@ function App() {
   focusedSessionIdRef.current = focusedSessionId;
   drawersRef.current = drawers;
   sharedRef.current = { id: sharedSessionId, token: sharedToken };
+  githubBladeRef.current = githubBlade;
 
   useEffect(() => {
     void loadState();
@@ -209,12 +217,13 @@ function App() {
   }, [sharedSessionId, signedIn, state.interactiveSessions]);
 
   useEffect(() => {
-    if (!signedIn || appView !== "openclaw") return;
+    if (!signedIn || !["openclaw", "loop"].includes(appView)) return;
     void loadOpenClawWorkflow();
   }, [signedIn, appView]);
 
   useEffect(() => {
-    if (!signedIn || appView !== "openclaw" || openClawRunner.status !== "unknown") return;
+    if (!signedIn || !["openclaw", "loop"].includes(appView) || openClawRunner.status !== "unknown")
+      return;
     if (!openClawRunner.saved) return;
     if (openClawRunnerAutoChecked.current) return;
     openClawRunnerAutoChecked.current = true;
@@ -229,7 +238,12 @@ function App() {
   ]);
 
   useEffect(() => {
-    if (!signedIn || appView !== "openclaw" || openClawRunner.status !== "connected") return;
+    if (
+      !signedIn ||
+      !["openclaw", "loop"].includes(appView) ||
+      openClawRunner.status !== "connected"
+    )
+      return;
     void refreshOpenClawRunnerRuns().catch(() => {});
     const interval = setInterval(() => {
       void refreshOpenClawRunnerRuns().catch(() => {});
@@ -465,18 +479,35 @@ function App() {
   }
 
   function setAppView(value) {
-    const next = value === "board" ? "board" : value === "openclaw" ? "openclaw" : "fleet";
+    const next =
+      value === "board"
+        ? "board"
+        : value === "openclaw"
+          ? "openclaw"
+          : value === "loop"
+            ? "loop"
+            : "fleet";
     setAppViewState(next);
     closeAllDrawers();
     if (!history.pushState) return;
     const url = new URL(location.href);
     url.pathname =
-      next === "board" ? "/app/board" : next === "openclaw" ? clawQueuePath : "/app/fleet";
+      next === "board"
+        ? "/app/board"
+        : next === "openclaw"
+          ? clawQueuePath
+          : next === "loop"
+            ? clawLoopPath
+            : "/app/fleet";
     url.search = "";
     history.pushState(null, "", url);
   }
 
   function closeTopDrawer() {
+    if (githubBladeRef.current) {
+      setGithubBlade(null);
+      return true;
+    }
     const order = ["card", "interactive", "run", "sessions", "admin"];
     const id = order.findLast((key) => drawers[key]);
     if (!id) return false;
@@ -522,7 +553,9 @@ function App() {
         ? "/app/board"
         : appView === "openclaw"
           ? clawQueuePath
-          : "/app/fleet";
+          : appView === "loop"
+            ? clawLoopPath
+            : "/app/fleet";
     url.search = "";
     history.replaceState(null, "", url);
   }
@@ -537,7 +570,11 @@ function App() {
     try {
       const data = await api(`/api/openclaw/workflow${queryText ? `?${queryText}` : ""}`);
       if (seq !== openClawSeq.current) return;
-      setOpenClawState((current) => ({ ...current, loading: false, data, error: "" }));
+      const hydrated = params.skipLocalCoverage
+        ? data
+        : await hydrateOpenClawWorkflowWithLocalCoverage(data, openClawRunner).catch(() => data);
+      if (seq !== openClawSeq.current) return;
+      setOpenClawState((current) => ({ ...current, loading: false, data: hydrated, error: "" }));
     } catch (error) {
       if (seq !== openClawSeq.current) return;
       setOpenClawState((current) => ({
@@ -563,14 +600,14 @@ function App() {
     });
   }
 
-  async function createOpenClawCandidateCard(candidate) {
-    const prompt = openClawCandidatePrompt(candidate);
+  async function createOpenClawCandidateCard(candidate, codexReasoningEffort, proofMode) {
+    const prompt = openClawCandidatePrompt(candidate, codexReasoningEffort, proofMode);
     await api("/api/cards", {
       method: "POST",
       body: {
         title: `OpenClaw #${candidate.number}: ${candidate.title}`,
         prompt,
-        repo: openClawState.data?.repo || "openclaw/openclaw",
+        repo: candidate.repo || openClawState.data?.repo || "openclaw/openclaw",
         source: "Issue",
         runtime: "auto",
         policy: "open_pr",
@@ -579,8 +616,29 @@ function App() {
     await loadState();
   }
 
-  async function copyOpenClawCandidatePrompt(candidate) {
-    await copyText(openClawCandidatePrompt(candidate));
+  async function copyOpenClawCandidatePrompt(candidate, codexReasoningEffort, proofMode) {
+    await copyText(openClawCandidatePrompt(candidate, codexReasoningEffort, proofMode));
+  }
+
+  async function claimOpenClawIssueWork(candidate, runner) {
+    const response = await fetch(`${resolveRunnerUrl(runner.url)}/claim`, {
+      method: "POST",
+      headers: {
+        ...openClawRunnerHeaders(runner),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        repo: candidate.repo || openClawState.data?.repo || "openclaw/openclaw",
+        issueNumber: candidate.number,
+        issueUrl: candidate.url,
+        title: candidate.title,
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body.ok === false) {
+      throw new Error(body.error || `Claim comment failed with ${response.status}`);
+    }
+    return body.claim || null;
   }
 
   function updateOpenClawRunnerSettings(next) {
@@ -618,6 +676,19 @@ function App() {
         runs,
         runsError: "",
       }));
+      const currentWorkflow = openClawState.data;
+      if (currentWorkflow) {
+        void hydrateOpenClawWorkflowWithLocalCoverage(currentWorkflow, {
+          ...target,
+          status: "connected",
+        })
+          .then((data) => {
+            setOpenClawState((latest) =>
+              latest.data === currentWorkflow ? { ...latest, data } : latest,
+            );
+          })
+          .catch(() => {});
+      }
       return body;
     } catch (error) {
       setOpenClawRunner((current) => ({
@@ -629,7 +700,7 @@ function App() {
     }
   }
 
-  async function startOpenClawCodexWork(candidate) {
+  async function startOpenClawCodexWork(candidate, codexReasoningEffort, proofMode) {
     if (!openClawState.data?.governor?.canStartNewWork) {
       throw new Error("New work is paused by the current OpenClaw limits");
     }
@@ -640,6 +711,12 @@ function App() {
       error: "",
     }));
     try {
+      const prompt = openClawCandidatePrompt(
+        candidate,
+        codexReasoningEffort,
+        proofMode,
+        "bridge-managed",
+      );
       const response = await fetch(`${resolveRunnerUrl(target.url)}/start`, {
         method: "POST",
         headers: {
@@ -647,12 +724,15 @@ function App() {
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          repo: openClawState.data?.repo || "openclaw/openclaw",
+          repo: candidate.repo || openClawState.data?.repo || "openclaw/openclaw",
           issueNumber: candidate.number,
           issueUrl: candidate.url,
           title: candidate.title,
           queueId: candidate.queueId,
-          prompt: openClawCandidatePrompt(candidate),
+          codexReasoningEffort: openClawNormalizeReasoningEffort(codexReasoningEffort),
+          proofMode: openClawNormalizeProofMode(proofMode),
+          claimIssue: true,
+          prompt,
         }),
       });
       const body = await response.json().catch(() => ({}));
@@ -674,7 +754,6 @@ function App() {
     } catch (error) {
       setOpenClawRunner((current) => ({
         ...current,
-        status: "error",
         startingIssue: null,
         error: error.message || "Could not start local Codex",
       }));
@@ -682,7 +761,7 @@ function App() {
     }
   }
 
-  async function trackOpenClawCandidateWork(candidate) {
+  async function trackOpenClawCandidateWork(candidate, codexReasoningEffort, proofMode) {
     const target = openClawRunner;
     setOpenClawRunner((current) => ({
       ...current,
@@ -690,6 +769,11 @@ function App() {
       error: "",
     }));
     try {
+      const prompt = openClawCandidatePrompt(candidate, codexReasoningEffort, proofMode);
+      const hasPossiblePrCoverage = openClawCandidateHasPrCoverage(candidate);
+      const coverageUnknown = openClawCandidateCoverageUnknown(candidate);
+      const skipClaimForCoverage = hasPossiblePrCoverage || coverageUnknown;
+      const claim = skipClaimForCoverage ? null : await claimOpenClawIssueWork(candidate, target);
       const response = await fetch(`${resolveRunnerUrl(target.url)}/track`, {
         method: "POST",
         headers: {
@@ -697,19 +781,32 @@ function App() {
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          repo: openClawState.data?.repo || "openclaw/openclaw",
+          repo: candidate.repo || openClawState.data?.repo || "openclaw/openclaw",
           issueNumber: candidate.number,
           issueUrl: candidate.url,
           title: candidate.title,
           queueId: candidate.queueId,
+          codexReasoningEffort: openClawNormalizeReasoningEffort(codexReasoningEffort),
+          proofMode: openClawNormalizeProofMode(proofMode),
           source: "manual",
-          prompt: openClawCandidatePrompt(candidate),
-          note: "Tracked for copy/paste, tmux, or external Codex work.",
+          prompt,
+          note: skipClaimForCoverage
+            ? "Tracked as a PR coverage investigation. No issue claim was posted."
+            : "Tracked for copy/paste, tmux, or external Codex work.",
+          claimCommentUrl: claim?.url || null,
+          claimCommentStatus: claim?.status || null,
         }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok || body.ok === false) {
         throw new Error(body.error || `Runner returned ${response.status}`);
+      }
+      if (body.run && claim?.status) {
+        body.run = {
+          ...body.run,
+          claimCommentUrl: claim.url || body.run.claimCommentUrl || null,
+          claimCommentStatus: claim.status,
+        };
       }
       const runs = await fetchOpenClawRunnerRuns(target).catch(() =>
         body.run ? [body.run, ...(openClawRunner.runs || [])] : openClawRunner.runs || [],
@@ -859,7 +956,10 @@ function App() {
 
   function preserveLoginReturnUrl() {
     try {
-      if (sharedRef.current.id) sessionStorage.setItem(loginReturnKey, location.href);
+      const url = new URL(location.href);
+      if (sharedRef.current.id || isLoginReturnUrl(url)) {
+        sessionStorage.setItem(loginReturnKey, url.href);
+      }
     } catch {}
   }
 
@@ -1192,6 +1292,9 @@ function App() {
     updateOpenClawRunnerRun,
     startOpenClawCodexWork,
     createOpenClawHandoff,
+    githubBlade,
+    openGithubBlade: (target) => setGithubBlade(openGithubBladeTarget(target)),
+    closeGithubBlade: () => setGithubBlade(null),
   };
 
   return <CrabfleetApp {...props} />;
@@ -1227,6 +1330,7 @@ function CrabfleetApp(props) {
       <RunDrawer {...props} />
       <SessionsDrawer {...props} />
       <AdminDrawer {...props} />
+      <GithubBlade blade={props.githubBlade} onClose={props.closeGithubBlade} />
     </>
   );
 }
@@ -1404,6 +1508,15 @@ function AppShell(props) {
             <span>Claw Queue</span>
           </button>
           <button
+            class={props.appView === "loop" ? "active" : ""}
+            title="Loop"
+            aria-label="Loop"
+            onClick={() => props.setAppView("loop")}
+          >
+            <Icon name="git-branch" />
+            <span>Loop</span>
+          </button>
+          <button
             title="Admin"
             aria-label="Admin"
             disabled={!canOwn(user)}
@@ -1434,7 +1547,7 @@ function AppShell(props) {
           <Icon name="book-open" />
         </button>
       </aside>
-      <main class="shell">
+      <main class={`shell ${props.appView === "loop" ? "wide" : ""}`}>
         <section class="top">
           <div class="title">
             <h1>
@@ -1442,14 +1555,18 @@ function AppShell(props) {
                 ? "Board"
                 : props.appView === "openclaw"
                   ? "Claw Queue"
-                  : productName}
+                  : props.appView === "loop"
+                    ? "Master Loop"
+                    : productName}
             </h1>
             <p>
               {props.appView === "board"
                 ? "Prompt cards and run attempts, separated from the live crabbox fleet."
                 : props.appView === "openclaw"
                   ? "ClawSweeper-screened issues, Codex handoff, PR readiness, and maintainer review notes."
-                  : "All visible Codex crabboxes grouped by person, with SSH, WebVNC, and OpenClaw supervision."}
+                  : props.appView === "loop"
+                    ? "Full-width swimlanes for watching queue candidates, active Codex plates, PR state, proof, CI, and maintainer handoff."
+                    : "All visible Codex crabboxes grouped by person, with SSH, WebVNC, and OpenClaw supervision."}
             </p>
           </div>
           <button
@@ -1468,6 +1585,8 @@ function AppShell(props) {
           <BoardPage user={user} {...props} />
         ) : props.appView === "openclaw" ? (
           <OpenClawPage user={user} {...props} />
+        ) : props.appView === "loop" ? (
+          <OpenClawLoopPage user={user} {...props} />
         ) : (
           <FleetPage
             active={active}
@@ -1569,29 +1688,132 @@ function OpenClawPage(props) {
   const pullRequests = workflow?.pullRequests?.items || [];
   const [actionError, setActionError] = useState("");
   const [busyIssue, setBusyIssue] = useState(null);
+  const [reasoningOverrides, setReasoningOverrides] = useState({});
+  const [proofOverrides, setProofOverrides] = useState({});
+  const [specificIssue, setSpecificIssue] = useState({
+    input: "",
+    loading: false,
+    error: "",
+    result: null,
+  });
   const canCreate = canMaintain(props.user) && Boolean(governor?.canStartNewWork);
   const canStartWork = Boolean(governor?.canStartNewWork);
-  async function handleTrackCandidate(candidate) {
+  const defaultReasoningEffort = openClawNormalizeReasoningEffort(
+    preferences?.codexReasoningEffort,
+  );
+  function candidateReasoningEffort(candidate) {
+    const key = openClawIssueKey(candidate?.number, candidate?.url);
+    return openClawNormalizeReasoningEffort(
+      key ? reasoningOverrides[key] : null,
+      defaultReasoningEffort,
+    );
+  }
+  function handleReasoningChange(candidate, value) {
+    const key = openClawIssueKey(candidate?.number, candidate?.url);
+    if (!key) return;
+    setReasoningOverrides((current) => ({
+      ...current,
+      [key]: openClawNormalizeReasoningEffort(value, defaultReasoningEffort),
+    }));
+  }
+  function candidateProofMode(candidate) {
+    const key = openClawIssueKey(candidate?.number, candidate?.url);
+    return openClawNormalizeProofMode(
+      key ? proofOverrides[key] : null,
+      candidate?.signals?.needsLiveValidation ? "crabbox" : "auto",
+    );
+  }
+  function handleProofModeChange(candidate, value) {
+    const key = openClawIssueKey(candidate?.number, candidate?.url);
+    if (!key) return;
+    setProofOverrides((current) => ({
+      ...current,
+      [key]: openClawNormalizeProofMode(value, candidateProofMode(candidate)),
+    }));
+  }
+  async function handleLoadSpecificIssue(input = specificIssue.input) {
+    const value = String(input || "").trim();
+    if (!value) {
+      setSpecificIssue((current) => ({
+        ...current,
+        error: "Paste a GitHub issue URL, #number, or number first.",
+        result: null,
+      }));
+      return;
+    }
+    setSpecificIssue((current) => ({
+      ...current,
+      input: value,
+      loading: true,
+      error: "",
+      result: null,
+    }));
+    try {
+      const query = new URLSearchParams({ input: value });
+      if (workflow?.repo) query.set("repo", workflow.repo);
+      const result = await api(`/api/openclaw/issue?${query.toString()}`);
+      const hydrated = await hydrateOpenClawSpecificIssueWithLocalCoverage(
+        result,
+        props.openClawRunner,
+      ).catch(() => result);
+      setSpecificIssue({
+        input: value,
+        loading: false,
+        error: hydrated.coverageError || "",
+        result: {
+          ...hydrated,
+          candidate: hydrated.candidate ? { ...hydrated.candidate, repo: hydrated.repo } : null,
+        },
+      });
+    } catch (error) {
+      setSpecificIssue((current) => ({
+        ...current,
+        loading: false,
+        error: error.message || "Could not load issue",
+        result: null,
+      }));
+    }
+  }
+  async function handleTrackCandidate(
+    candidate,
+    codexReasoningEffort = candidateReasoningEffort(candidate),
+    proofMode = candidateProofMode(candidate),
+  ) {
     setActionError("");
     try {
-      await props.trackOpenClawCandidateWork(candidate);
+      await props.trackOpenClawCandidateWork(candidate, codexReasoningEffort, proofMode);
     } catch (error) {
       setActionError(error.message || "Could not track local Codex work");
     }
   }
-  async function handleStartCandidate(candidate) {
+  async function handleStartCandidate(
+    candidate,
+    codexReasoningEffort = candidateReasoningEffort(candidate),
+    proofMode = candidateProofMode(candidate),
+  ) {
     setActionError("");
     try {
-      await props.startOpenClawCodexWork(candidate);
+      await props.startOpenClawCodexWork(candidate, codexReasoningEffort, proofMode);
     } catch (error) {
       setActionError(error.message || "Could not start local Codex");
     }
   }
-  async function handleCreateCandidate(candidate) {
+  async function handleCopyCandidate(
+    candidate,
+    codexReasoningEffort = candidateReasoningEffort(candidate),
+    proofMode = candidateProofMode(candidate),
+  ) {
+    await props.copyOpenClawCandidatePrompt(candidate, codexReasoningEffort, proofMode);
+  }
+  async function handleCreateCandidate(
+    candidate,
+    codexReasoningEffort = candidateReasoningEffort(candidate),
+    proofMode = candidateProofMode(candidate),
+  ) {
     setActionError("");
     setBusyIssue(candidate.number);
     try {
-      await props.createOpenClawCandidateCard(candidate);
+      await props.createOpenClawCandidateCard(candidate, codexReasoningEffort, proofMode);
     } catch (error) {
       setActionError(error.message || "Could not create card");
     } finally {
@@ -1614,6 +1836,18 @@ function OpenClawPage(props) {
         <div class="workflow-banner error">{props.openClawState.error}</div>
       ) : null}
       {actionError ? <div class="workflow-banner error">{actionError}</div> : null}
+      {workflow?.localCoverage?.source === "gitcrawl" ? (
+        <div class="workflow-banner local-snapshot">
+          Local Gitcrawl queue snapshot active
+          {workflow.localCoverage.lastSyncAt
+            ? `; last sync ${formatOpenClawTimestamp(workflow.localCoverage.lastSyncAt)}`
+            : ""}
+          {workflow.localCoverage.coveredIssueCount
+            ? `; ${workflow.localCoverage.coveredIssueCount} displayed issue${workflow.localCoverage.coveredIssueCount === 1 ? "" : "s"} flagged with possible PR coverage`
+            : ""}
+          .
+        </div>
+      ) : null}
       <section class="openclaw-summary">
         <Metric
           label="Open PRs"
@@ -1643,11 +1877,34 @@ function OpenClawPage(props) {
         canCreate={canCreate}
         canStartWork={canStartWork}
         busyIssue={busyIssue}
+        reasoningEffort={candidateReasoningEffort}
+        onReasoningChange={handleReasoningChange}
+        proofMode={candidateProofMode}
+        onProofModeChange={handleProofModeChange}
         onRefresh={props.loadOpenClawWorkflow}
-        onCopyPrompt={props.copyOpenClawCandidatePrompt}
+        onCopyPrompt={handleCopyCandidate}
         onTrack={handleTrackCandidate}
         onStartCodex={handleStartCandidate}
         onCreate={handleCreateCandidate}
+        onOpenGithubBlade={props.openGithubBlade}
+      />
+      <OpenClawSpecificIssuePanel
+        specificIssue={specificIssue}
+        runner={props.openClawRunner}
+        canCreate={canCreate}
+        canStartWork={canStartWork}
+        busyIssue={busyIssue}
+        reasoningEffort={candidateReasoningEffort}
+        proofMode={candidateProofMode}
+        onInput={(value) => setSpecificIssue((current) => ({ ...current, input: value }))}
+        onLoad={handleLoadSpecificIssue}
+        onReasoningChange={handleReasoningChange}
+        onProofModeChange={handleProofModeChange}
+        onCopyPrompt={handleCopyCandidate}
+        onTrack={handleTrackCandidate}
+        onStartCodex={handleStartCandidate}
+        onCreate={handleCreateCandidate}
+        onOpenGithubBlade={props.openGithubBlade}
       />
       <OpenClawPreferencesPanel
         preferences={preferences}
@@ -1667,15 +1924,21 @@ function OpenClawPage(props) {
         canCreate={canCreate}
         canStartWork={canStartWork}
         busyIssue={busyIssue}
-        onCopyPrompt={props.copyOpenClawCandidatePrompt}
+        reasoningEffort={candidateReasoningEffort}
+        onReasoningChange={handleReasoningChange}
+        proofMode={candidateProofMode}
+        onProofModeChange={handleProofModeChange}
+        onCopyPrompt={handleCopyCandidate}
         onTrack={handleTrackCandidate}
         onStartCodex={handleStartCandidate}
         onCreate={handleCreateCandidate}
+        onOpenGithubBlade={props.openGithubBlade}
       />
       <OpenClawActiveWorkPanel
         runner={props.openClawRunner}
         onRefresh={props.refreshOpenClawRunnerRuns}
         onUpdate={props.updateOpenClawRunnerRun}
+        onOpenGithubBlade={props.openGithubBlade}
       />
       <section class="openclaw-grid">
         <div class="openclaw-main">
@@ -1695,10 +1958,16 @@ function OpenClawPage(props) {
                   canStartWork={canStartWork}
                   runner={props.openClawRunner}
                   busyIssue={busyIssue}
-                  onCopyPrompt={props.copyOpenClawCandidatePrompt}
+                  reasoningEffort={candidateReasoningEffort}
+                  onReasoningChange={handleReasoningChange}
+                  proofMode={candidateProofMode}
+                  onProofModeChange={handleProofModeChange}
+                  onCopyPrompt={handleCopyCandidate}
                   onTrack={handleTrackCandidate}
                   onStartCodex={handleStartCandidate}
                   onCreate={handleCreateCandidate}
+                  onRefresh={() => props.loadOpenClawWorkflow({ skipLocalCoverage: true })}
+                  onOpenGithubBlade={props.openGithubBlade}
                 />
               ))
             ) : (
@@ -1712,6 +1981,8 @@ function OpenClawPage(props) {
             error={workflow?.pullRequests?.error}
             handoffText={props.openClawState.handoffText}
             onHandoff={props.createOpenClawHandoff}
+            onRefresh={() => props.loadOpenClawWorkflow({ skipLocalCoverage: true })}
+            onOpenGithubBlade={props.openGithubBlade}
           />
         </aside>
       </section>
@@ -1719,9 +1990,64 @@ function OpenClawPage(props) {
   );
 }
 
+function OpenClawLoopPage(props) {
+  const workflow = props.openClawState.data;
+  const preferences = workflow?.preferences;
+  const governor = workflow?.governor;
+  const queues = workflow?.queues || [];
+  const pullRequests = workflow?.pullRequests?.items || [];
+  return (
+    <section class="openclaw-page openclaw-loop-page" aria-label="Master Loop">
+      <section class="openclaw-toolbar">
+        <div>
+          <div class="section-kicker">MASTER LOOP</div>
+          <h2>{workflow?.repo || "openclaw/openclaw"}</h2>
+        </div>
+        <button onClick={() => props.loadOpenClawWorkflow()} disabled={props.openClawState.loading}>
+          <Icon name="refresh-cw" />
+          Refresh
+        </button>
+      </section>
+      {props.openClawState.error ? (
+        <div class="workflow-banner error">{props.openClawState.error}</div>
+      ) : null}
+      <section class="openclaw-summary">
+        <Metric
+          label="Open PRs"
+          value={governor ? `${governor.openPrCount}/${governor.activeOpenPrLimit}` : "-"}
+        />
+        <Metric
+          label="Usage drop"
+          value={
+            governor?.usageDrop === null || governor?.usageDrop === undefined
+              ? "-"
+              : `${governor.usageDrop}/${governor.usageLimit}`
+          }
+        />
+        <Metric label="Workers" value={preferences?.maxParallelWorkers ?? "-"} />
+        <Metric label="Bridge" value={props.openClawRunner?.status || "unknown"} />
+      </section>
+      <OpenClawMasterLoopPanel
+        queues={queues}
+        runner={props.openClawRunner}
+        pullRequests={pullRequests}
+        governor={governor}
+        onOpenGithubBlade={props.openGithubBlade}
+      />
+      <OpenClawActiveWorkPanel
+        runner={props.openClawRunner}
+        onRefresh={props.refreshOpenClawRunnerRuns}
+        onUpdate={props.updateOpenClawRunnerRun}
+        onOpenGithubBlade={props.openGithubBlade}
+      />
+    </section>
+  );
+}
+
 function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
   const [draft, setDraft] = useState(() => openClawPreferenceDraft(preferences));
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   useEffect(() => {
     setDraft(openClawPreferenceDraft(preferences));
   }, [
@@ -1729,18 +2055,24 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
     preferences?.targetRepo,
     preferences?.githubLogin,
     preferences?.minimumIssueAgeHours,
+    preferences?.codexReasoningEffort,
   ]);
   if (!preferences) return <div class="openclaw-settings skeleton">Loading settings...</div>;
   async function submit(event) {
     event.preventDefault();
     setBusy(true);
+    setError("");
     try {
       const now = Date.now();
       const weeklyRemainingBaseline = nullableFormNumber(draft.weeklyRemainingBaseline);
       const weeklyRemainingCurrent = nullableFormNumber(draft.weeklyRemainingCurrent);
-      const usageWindowActive =
-        preferences.usageWindowStartedAt &&
-        now - preferences.usageWindowStartedAt <= 24 * 60 * 60 * 1000;
+      const savedWeeklyRemainingBaseline = nullableFormNumber(preferences.weeklyRemainingBaseline);
+      const savedWeeklyRemainingCurrent = nullableFormNumber(preferences.weeklyRemainingCurrent);
+      const usageValuesChanged =
+        weeklyRemainingBaseline !== savedWeeklyRemainingBaseline ||
+        weeklyRemainingCurrent !== savedWeeklyRemainingCurrent;
+      const usageValuesCleared =
+        weeklyRemainingBaseline === null && weeklyRemainingCurrent === null;
       await onSave({
         roleMode: draft.roleMode,
         targetRepo: draft.targetRepo,
@@ -1749,15 +2081,17 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
         dailyUsageDropLimit: Number(draft.dailyUsageDropLimit),
         maxParallelWorkers: Number(draft.maxParallelWorkers),
         minimumIssueAgeHours: Number(draft.minimumIssueAgeHours),
+        codexReasoningEffort: draft.codexReasoningEffort,
         weeklyRemainingBaseline,
         weeklyRemainingCurrent,
-        usageWindowStartedAt:
-          weeklyRemainingBaseline === null && weeklyRemainingCurrent === null
-            ? null
-            : usageWindowActive
-              ? preferences.usageWindowStartedAt
-              : now,
+        usageWindowStartedAt: usageValuesCleared
+          ? null
+          : usageValuesChanged
+            ? now
+            : preferences.usageWindowStartedAt,
       });
+    } catch (error) {
+      setError(error.message || "Could not save Claw Queue settings");
     } finally {
       setBusy(false);
     }
@@ -1844,6 +2178,24 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
       </label>
       <label>
         <LabelText
+          text="Thinking"
+          help="Default Codex reasoning effort used for copied prompts and Start Codex runs. Each issue row can override it before launch."
+        />
+        <select
+          value={draft.codexReasoningEffort}
+          onInput={(event) =>
+            setDraft({ ...draft, codexReasoningEffort: event.currentTarget.value })
+          }
+        >
+          {openClawReasoningEfforts.map((effort) => (
+            <option value={effort} key={effort}>
+              {openClawReasoningEffortLabel(effort)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <LabelText
           text="Min issue age"
           help="Hours an issue must exist before Start Codex is enabled. Use 0 for fork or dummy testing."
         />
@@ -1890,6 +2242,7 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
       <button class="primary" type="submit" disabled={disabled}>
         {busy ? "Saving..." : "Save"}
       </button>
+      {error ? <div class="workflow-banner error settings-error">{error}</div> : null}
     </form>
   );
 }
@@ -1950,6 +2303,177 @@ function OpenClawRunnerPanel({ runner, preferences, onChange, onCheck }) {
   );
 }
 
+function OpenClawSpecificIssuePanel({
+  specificIssue,
+  runner,
+  canCreate,
+  canStartWork,
+  busyIssue,
+  reasoningEffort,
+  proofMode,
+  onInput,
+  onLoad,
+  onReasoningChange,
+  onProofModeChange,
+  onCopyPrompt,
+  onTrack,
+  onStartCodex,
+  onCreate,
+  onOpenGithubBlade,
+}) {
+  const candidate = specificIssue?.result?.candidate || null;
+  const issueInWork = candidate
+    ? openClawRunnerHasIssueRun(runner, candidate.number, candidate.url)
+    : false;
+  const candidateEffort = candidate ? reasoningEffort(candidate) : "high";
+  const candidateProof = candidate ? proofMode(candidate) : "auto";
+  const hasPrCoverage = candidate ? openClawCandidateHasPrCoverage(candidate) : false;
+  const coverageUnknown = candidate ? openClawCandidateCoverageUnknown(candidate) : false;
+  return (
+    <section class="specific-issue-panel" aria-label="Load a specific OpenClaw issue">
+      <header class="workflow-section-head">
+        <div>
+          <div class="section-kicker">SPECIFIC ISSUE</div>
+          <h2>Paste an issue to work from</h2>
+          <p>Use a GitHub issue URL, #number, or number when the queue has not surfaced it.</p>
+        </div>
+      </header>
+      <form
+        class="specific-issue-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onLoad();
+        }}
+      >
+        <input
+          aria-label="Specific GitHub issue URL or number"
+          value={specificIssue?.input || ""}
+          placeholder="https://github.com/openclaw/openclaw/issues/89994 or #89994"
+          onInput={(event) => onInput(event.currentTarget.value)}
+        />
+        <button type="submit" disabled={specificIssue?.loading}>
+          <Icon name="search" />
+          {specificIssue?.loading ? "Loading..." : "Load issue"}
+        </button>
+      </form>
+      {specificIssue?.error ? (
+        <div class={`workflow-banner ${candidate ? "" : "error"}`}>{specificIssue.error}</div>
+      ) : null}
+      {candidate ? (
+        <article class="candidate-row specific-issue-row">
+          <div class="candidate-main">
+            <a href={candidate.url} target="_blank" rel="noreferrer">
+              #{candidate.number} {candidate.title}
+            </a>
+            <div class="candidate-meta">
+              {candidate.author ? <span class="chip">@{candidate.author}</span> : null}
+              <span class={`chip ${candidate.signals.readyForPickup ? "ok" : "warn"}`}>
+                {candidate.signals.readyForPickup ? "ready" : candidate.signals.ageGate}
+              </span>
+              {candidate.signals.queueable ? <span class="chip ok">queueable</span> : null}
+              {candidate.signals.sourceRepro ? <span class="chip">source repro</span> : null}
+              {candidate.signals.needsLiveValidation ? (
+                <span class="chip warn">live proof</span>
+              ) : null}
+              {hasPrCoverage ? <span class="chip danger">possible PR</span> : null}
+              {issueInWork ? <span class="chip warn">in work</span> : null}
+            </div>
+            {hasPrCoverage ? <OpenClawCoverageWarning candidate={candidate} /> : null}
+          </div>
+          <div class="candidate-actions">
+            <OpenClawReasoningSelect
+              candidate={candidate}
+              value={candidateEffort}
+              onChange={onReasoningChange}
+            />
+            <OpenClawProofModeSelect
+              candidate={candidate}
+              value={candidateProof}
+              onChange={onProofModeChange}
+            />
+            <button
+              class="icon-only"
+              title="Open GitHub blade"
+              onClick={() =>
+                onOpenGithubBlade({
+                  url: candidate.url,
+                  title: `#${candidate.number} ${candidate.title}`,
+                  kind: "GitHub issue",
+                })
+              }
+            >
+              <Icon name="panel-right-open" />
+            </button>
+            <button onClick={() => onCopyPrompt(candidate, candidateEffort, candidateProof)}>
+              <Icon name="copy" />
+              Copy prompt
+            </button>
+            <button
+              title={openClawTrackDisabledReason(candidate, canStartWork, runner)}
+              disabled={
+                runner?.status !== "connected" ||
+                issueInWork ||
+                !canStartWork ||
+                !candidate.signals.readyForPickup ||
+                runner?.trackingIssue === candidate.number
+              }
+              onClick={() => onTrack(candidate, candidateEffort, candidateProof)}
+            >
+              <Icon name="list-checks" />
+              {issueInWork
+                ? "Tracked"
+                : runner?.trackingIssue === candidate.number
+                  ? "Tracking..."
+                  : "Track"}
+            </button>
+            <button
+              title={
+                coverageUnknown
+                  ? specificIssue.error
+                  : openClawStartDisabledReason(candidate, canStartWork, runner)
+              }
+              disabled={
+                runner?.status !== "connected" ||
+                issueInWork ||
+                !canStartWork ||
+                !candidate.signals.readyForPickup ||
+                hasPrCoverage ||
+                coverageUnknown ||
+                openClawRunnerStartCapacityReached(runner) ||
+                runner?.startingIssue === candidate.number
+              }
+              onClick={() => onStartCodex(candidate, candidateEffort, candidateProof)}
+            >
+              <Icon name="square-terminal" />
+              {issueInWork
+                ? "In work"
+                : runner?.startingIssue === candidate.number
+                  ? "Starting..."
+                  : "Start Codex"}
+            </button>
+            <button
+              class="primary"
+              disabled={
+                !canCreate ||
+                issueInWork ||
+                !candidate.signals.readyForPickup ||
+                busyIssue === candidate.number
+              }
+              onClick={() => onCreate(candidate, candidateEffort, candidateProof)}
+            >
+              {issueInWork
+                ? "On plate"
+                : busyIssue === candidate.number
+                  ? "Creating..."
+                  : "New card"}
+            </button>
+          </div>
+        </article>
+      ) : null}
+    </section>
+  );
+}
+
 function OpenClawCommandCenter({
   workflow,
   workflowError,
@@ -1960,11 +2484,16 @@ function OpenClawCommandCenter({
   canCreate,
   canStartWork,
   busyIssue,
+  reasoningEffort,
+  onReasoningChange,
+  proofMode,
+  onProofModeChange,
   onRefresh,
   onCopyPrompt,
   onTrack,
   onStartCodex,
   onCreate,
+  onOpenGithubBlade,
 }) {
   const plan = openClawCommandPlan({
     workflow,
@@ -1976,6 +2505,8 @@ function OpenClawCommandCenter({
   });
   const candidate = plan.candidate;
   const run = plan.run;
+  const candidateEffort = candidate ? reasoningEffort(candidate) : "high";
+  const candidateProof = candidate ? proofMode(candidate) : "auto";
   return (
     <section class={`openclaw-command-center ${plan.tone}`} aria-label="Claw Queue command center">
       <div class="command-main">
@@ -2007,6 +2538,19 @@ function OpenClawCommandCenter({
               <Icon name="send" />
               Handoff
             </button>
+            <button
+              type="button"
+              onClick={() =>
+                onOpenGithubBlade({
+                  url: openClawValidPrUrl(run.prUrl) || run.issueUrl,
+                  title: `#${run.issueNumber || "?"} ${run.title || "OpenClaw issue"}`,
+                  kind: openClawValidPrUrl(run.prUrl) ? "GitHub PR" : "GitHub issue",
+                })
+              }
+            >
+              <Icon name="panel-right-open" />
+              Blade
+            </button>
             <button type="button" onClick={() => copyText(openClawRunNote(run))}>
               <Icon name="copy" />
               Note
@@ -2014,6 +2558,18 @@ function OpenClawCommandCenter({
           </>
         ) : candidate ? (
           <>
+            <div class="command-mode-controls" aria-label="Codex run options">
+              <OpenClawReasoningSelect
+                candidate={candidate}
+                value={candidateEffort}
+                onChange={onReasoningChange}
+              />
+              <OpenClawProofModeSelect
+                candidate={candidate}
+                value={candidateProof}
+                onChange={onProofModeChange}
+              />
+            </div>
             <button
               type="button"
               class="primary"
@@ -2022,37 +2578,56 @@ function OpenClawCommandCenter({
                 runner?.status !== "connected" ||
                 !canStartWork ||
                 !candidate.signals.readyForPickup ||
+                openClawCandidateHasPrCoverage(candidate) ||
+                openClawCandidateCoverageUnknown(candidate) ||
                 openClawRunnerStartCapacityReached(runner) ||
                 runner?.startingIssue === candidate.number
               }
-              onClick={() => onStartCodex(candidate)}
+              onClick={() => onStartCodex(candidate, candidateEffort, candidateProof)}
             >
               <Icon name="square-terminal" />
               {runner?.startingIssue === candidate.number ? "Starting" : "Start"}
             </button>
             <button
               type="button"
-              title={openClawTrackDisabledReason(candidate, runner)}
+              title={openClawTrackDisabledReason(candidate, canStartWork, runner)}
               disabled={
                 runner?.status !== "connected" ||
+                !canStartWork ||
                 !candidate.signals.readyForPickup ||
                 runner?.trackingIssue === candidate.number
               }
-              onClick={() => onTrack(candidate)}
+              onClick={() => onTrack(candidate, candidateEffort, candidateProof)}
             >
               <Icon name="list-checks" />
               {runner?.trackingIssue === candidate.number ? "Tracking" : "Track"}
             </button>
-            <button type="button" onClick={() => onCopyPrompt(candidate)}>
+            <button
+              type="button"
+              onClick={() => onCopyPrompt(candidate, candidateEffort, candidateProof)}
+            >
               <Icon name="copy" />
               Prompt
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                onOpenGithubBlade({
+                  url: candidate.url,
+                  title: `#${candidate.number} ${candidate.title}`,
+                  kind: "GitHub issue",
+                })
+              }
+            >
+              <Icon name="panel-right-open" />
+              Blade
             </button>
             <button
               type="button"
               disabled={
                 !canCreate || !candidate.signals.readyForPickup || busyIssue === candidate.number
               }
-              onClick={() => onCreate(candidate)}
+              onClick={() => onCreate(candidate, candidateEffort, candidateProof)}
             >
               {busyIssue === candidate.number ? "Creating" : "Card"}
             </button>
@@ -2093,10 +2668,15 @@ function OpenClawWorkerRunway({
   canCreate,
   canStartWork,
   busyIssue,
+  reasoningEffort,
+  onReasoningChange,
+  proofMode,
+  onProofModeChange,
   onCopyPrompt,
   onTrack,
   onStartCodex,
   onCreate,
+  onOpenGithubBlade,
 }) {
   const runway = openClawWorkerRunway(queues, runner, preferences);
   const [copied, setCopied] = useState(false);
@@ -2136,11 +2716,103 @@ function OpenClawWorkerRunway({
             canCreate={canCreate}
             canStartWork={canStartWork}
             busyIssue={busyIssue}
+            reasoningEffort={reasoningEffort}
+            onReasoningChange={onReasoningChange}
+            proofMode={proofMode}
+            onProofModeChange={onProofModeChange}
             onCopyPrompt={onCopyPrompt}
             onTrack={onTrack}
             onStartCodex={onStartCodex}
             onCreate={onCreate}
+            onOpenGithubBlade={onOpenGithubBlade}
           />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function OpenClawMasterLoopPanel({ queues, runner, pullRequests, governor, onOpenGithubBlade }) {
+  const loop = openClawMasterLoopPlan({ queues, runner, pullRequests, governor });
+  return (
+    <section class="openclaw-loop-panel" aria-label="OpenClaw master loop">
+      <header class="workflow-section-head">
+        <div>
+          <div class="section-kicker">MASTER LOOP</div>
+          <h2>Autopilot swimlanes</h2>
+          <p>{loop.summary}</p>
+        </div>
+        <div class="loop-head-actions">
+          <span class={`chip ${loop.gateTone}`}>{loop.mode}</span>
+          <span class="chip">{loop.itemsTotal} visible items</span>
+          <button type="button" onClick={() => copyText(openClawMasterLoopBrief(loop))}>
+            <Icon name="clipboard-list" />
+            Copy loop brief
+          </button>
+        </div>
+      </header>
+      {loop.blockers.length ? <div class="workflow-banner">{loop.blockers.join(" ")}</div> : null}
+      <section class="loop-decision" aria-label="Next loop decision">
+        <div>
+          <span class={`command-pulse ${loop.decision.tone}`} />
+          <strong>{loop.decision.action}</strong>
+          <p>{loop.decision.reason}</p>
+        </div>
+        <div class="loop-gates">
+          {loop.gates.map((gate) => (
+            <span class={`chip ${gate.tone}`} key={gate.label}>
+              {gate.label}: {gate.value}
+            </span>
+          ))}
+        </div>
+      </section>
+      <div class="loop-swimlanes">
+        {loop.lanes.map((lane) => (
+          <article class={`loop-lane ${lane.tone}`} key={lane.id}>
+            <header>
+              <div>
+                <strong>{lane.title}</strong>
+                <span>{lane.description}</span>
+              </div>
+              <span class="chip">{lane.items.length}</span>
+            </header>
+            <div class="loop-lane-items">
+              {lane.items.length ? (
+                lane.items.slice(0, 4).map((item) => (
+                  <div class="loop-card" key={`${lane.id}:${item.id}`}>
+                    <span class={`chip ${item.tone}`}>{item.badge}</span>
+                    <strong>{item.title}</strong>
+                    <small>{item.detail}</small>
+                    <div class="loop-card-actions">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onOpenGithubBlade({
+                            url: item.url,
+                            title: item.title,
+                            kind: githubKindFromUrl(item.url),
+                          })
+                        }
+                      >
+                        <Icon name="panel-right-open" />
+                        Blade
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => window.open(item.url, "_blank", "noopener")}
+                        disabled={!item.url}
+                      >
+                        <Icon name="external-link" />
+                        Open
+                      </button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div class="empty">No items.</div>
+              )}
+            </div>
+          </article>
         ))}
       </div>
     </section>
@@ -2153,6 +2825,10 @@ function OpenClawWorkerLane({
   canCreate,
   canStartWork,
   busyIssue,
+  reasoningEffort,
+  onReasoningChange,
+  proofMode,
+  onProofModeChange,
   onCopyPrompt,
   onTrack,
   onStartCodex,
@@ -2160,6 +2836,8 @@ function OpenClawWorkerLane({
 }) {
   const prUrl = openClawValidPrUrl(lane.run?.prUrl);
   const priorityLabel = lane.candidate ? openClawCandidatePriorityLabel(lane.candidate) : null;
+  const candidateEffort = lane.candidate ? reasoningEffort(lane.candidate) : "high";
+  const candidateProof = lane.candidate ? proofMode(lane.candidate) : "auto";
   return (
     <article class={`worker-lane ${lane.kind}`}>
       <header class="worker-lane-head">
@@ -2177,10 +2855,27 @@ function OpenClawWorkerLane({
           <div class="candidate-meta">
             <span class={`chip ${openClawRunTone(lane.run)}`}>{openClawRunLabel(lane.run)}</span>
             {lane.run.queueId ? <span class="chip">{lane.run.queueId}</span> : null}
+            {lane.run.codexReasoningEffort ? (
+              <span class="chip">thinking {lane.run.codexReasoningEffort}</span>
+            ) : null}
+            {lane.run.proofMode ? <span class="chip">proof {lane.run.proofMode}</span> : null}
             {prUrl ? <span class="chip ok">PR linked</span> : null}
           </div>
           <p>{openClawRunNextAction(lane.run)}</p>
           <div class="worker-lane-actions">
+            <button
+              type="button"
+              onClick={() =>
+                onOpenGithubBlade({
+                  url: prUrl || lane.run.issueUrl,
+                  title: `#${lane.run.issueNumber || "?"} ${lane.run.title || "OpenClaw issue"}`,
+                  kind: prUrl ? "GitHub PR" : "GitHub issue",
+                })
+              }
+            >
+              <Icon name="panel-right-open" />
+              Blade
+            </button>
             <button onClick={() => copyText(openClawRunResumePrompt(lane.run))}>
               <Icon name="message-square-text" />
               Resume
@@ -2204,21 +2899,51 @@ function OpenClawWorkerLane({
             {lane.candidate.signals.currentMainRepro ? (
               <span class="chip">current main</span>
             ) : null}
+            {openClawCandidateHasPrCoverage(lane.candidate) ? (
+              <span class="chip danger">possible PR</span>
+            ) : null}
           </div>
+          {openClawCandidateHasPrCoverage(lane.candidate) ? (
+            <OpenClawCoverageWarning candidate={lane.candidate} />
+          ) : null}
           <p>{openClawCandidateWhy(lane.candidate)}</p>
           <div class="worker-lane-actions">
-            <button onClick={() => onCopyPrompt(lane.candidate)}>
+            <OpenClawReasoningSelect
+              candidate={lane.candidate}
+              value={candidateEffort}
+              onChange={onReasoningChange}
+            />
+            <OpenClawProofModeSelect
+              candidate={lane.candidate}
+              value={candidateProof}
+              onChange={onProofModeChange}
+            />
+            <button
+              type="button"
+              onClick={() =>
+                onOpenGithubBlade({
+                  url: lane.candidate.url,
+                  title: `#${lane.candidate.number} ${lane.candidate.title}`,
+                  kind: "GitHub issue",
+                })
+              }
+            >
+              <Icon name="panel-right-open" />
+              Blade
+            </button>
+            <button onClick={() => onCopyPrompt(lane.candidate, candidateEffort, candidateProof)}>
               <Icon name="copy" />
               Prompt
             </button>
             <button
-              title={openClawTrackDisabledReason(lane.candidate, runner)}
+              title={openClawTrackDisabledReason(lane.candidate, canStartWork, runner)}
               disabled={
                 runner?.status !== "connected" ||
+                !canStartWork ||
                 !lane.candidate.signals.readyForPickup ||
                 runner?.trackingIssue === lane.candidate.number
               }
-              onClick={() => onTrack(lane.candidate)}
+              onClick={() => onTrack(lane.candidate, candidateEffort, candidateProof)}
             >
               <Icon name="list-checks" />
               {runner?.trackingIssue === lane.candidate.number ? "Tracking..." : "Track"}
@@ -2229,10 +2954,12 @@ function OpenClawWorkerLane({
                 runner?.status !== "connected" ||
                 !canStartWork ||
                 !lane.candidate.signals.readyForPickup ||
+                openClawCandidateHasPrCoverage(lane.candidate) ||
+                openClawCandidateCoverageUnknown(lane.candidate) ||
                 openClawRunnerStartCapacityReached(runner) ||
                 runner?.startingIssue === lane.candidate.number
               }
-              onClick={() => onStartCodex(lane.candidate)}
+              onClick={() => onStartCodex(lane.candidate, candidateEffort, candidateProof)}
             >
               <Icon name="square-terminal" />
               {runner?.startingIssue === lane.candidate.number ? "Starting..." : "Start"}
@@ -2244,7 +2971,7 @@ function OpenClawWorkerLane({
                 !lane.candidate.signals.readyForPickup ||
                 busyIssue === lane.candidate.number
               }
-              onClick={() => onCreate(lane.candidate)}
+              onClick={() => onCreate(lane.candidate, candidateEffort, candidateProof)}
             >
               {busyIssue === lane.candidate.number ? "Creating..." : "Card"}
             </button>
@@ -2260,7 +2987,7 @@ function OpenClawWorkerLane({
   );
 }
 
-function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
+function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate, onOpenGithubBlade }) {
   const runs = Array.isArray(runner?.runs) ? runner.runs : [];
   const mission = openClawMissionControl(runs, runner);
   const readinessRadar = openClawReadinessRadar(runs);
@@ -2489,6 +3216,7 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
             const isLive = openClawRunActive(run);
             const checklist = openClawRunChecklist(run);
             const prUrl = openClawValidPrUrl(run?.prUrl);
+            const runWorktree = openClawRunWorktreePath(run);
             return (
               <article class="active-work-row" key={run.id}>
                 <div class="active-work-main">
@@ -2499,6 +3227,17 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
                     <span class={`chip ${openClawRunTone(run)}`}>{openClawRunLabel(run)}</span>
                     {run.queueId ? <span class="chip">{run.queueId}</span> : null}
                     {run.source ? <span class="chip">{run.source}</span> : null}
+                    {run.codexReasoningEffort ? (
+                      <span class="chip">thinking {run.codexReasoningEffort}</span>
+                    ) : null}
+                    {run.proofMode ? <span class="chip">proof {run.proofMode}</span> : null}
+                    {run.claimCommentStatus ? (
+                      <span class="chip ok">
+                        {run.claimCommentStatus === "already-commented" ? "claim found" : "claimed"}
+                      </span>
+                    ) : null}
+                    {runWorktree ? <span class="chip">worktree</span> : null}
+                    {run.worktreeBranch ? <span class="chip">{run.worktreeBranch}</span> : null}
                     {run.pid ? <span class="chip">pid {run.pid}</span> : null}
                     <span class="chip">{openClawRunWhen(run)}</span>
                   </div>
@@ -2513,6 +3252,13 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
                     ))}
                   </div>
                   <p class="active-work-next">{openClawRunNextAction(run)}</p>
+                  {openClawRunActivityLines(run).length ? (
+                    <div class="active-work-activity" aria-label="Latest agent activity">
+                      {openClawRunActivityLines(run).map((line) => (
+                        <code key={line}>{line}</code>
+                      ))}
+                    </div>
+                  ) : null}
                   {run.note ? <p class="active-work-note">{run.note}</p> : null}
                 </div>
                 <div class="active-work-detail">
@@ -2524,6 +3270,18 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
                   ) : null}
                   <code>{run.id}</code>
                   <div class="active-work-actions">
+                    <button
+                      onClick={() =>
+                        onOpenGithubBlade({
+                          url: prUrl || run.issueUrl,
+                          title: `#${run.issueNumber || "?"} ${run.title || "OpenClaw issue"}`,
+                          kind: prUrl ? "GitHub PR" : "GitHub issue",
+                        })
+                      }
+                    >
+                      <Icon name="panel-right-open" />
+                      Blade
+                    </button>
                     <button onClick={() => copyText(openClawRunResumePrompt(run))}>
                       <Icon name="message-square-text" />
                       Resume
@@ -2540,12 +3298,26 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate }) {
                     {run.logPath ? (
                       <button onClick={() => copyText(run.logPath)}>Copy log</button>
                     ) : null}
+                    {runWorktree ? (
+                      <button onClick={() => copyText(runWorktree)}>Copy worktree</button>
+                    ) : null}
                     <button
                       disabled={runner?.status !== "connected"}
                       onClick={() => openRunLog(run)}
                     >
                       <Icon name="terminal" />
                       {logViewer.runId === run.id ? "Watching" : "Watch log"}
+                    </button>
+                    <button
+                      disabled={isLive || busyRun === run.id || run.status === "handoff-sent"}
+                      onClick={() =>
+                        update(run, {
+                          status: "handoff-sent",
+                          note: "Discord handoff sent; waiting for maintainer feedback, merge, or follow-up.",
+                        })
+                      }
+                    >
+                      Handoff sent
                     </button>
                     <button
                       disabled={isLive || busyRun === run.id || run.status === "parked"}
@@ -2687,10 +3459,16 @@ function OpenClawQueue({
   canStartWork,
   runner,
   busyIssue,
+  reasoningEffort,
+  onReasoningChange,
+  proofMode,
+  onProofModeChange,
   onCopyPrompt,
   onTrack,
   onStartCodex,
   onCreate,
+  onRefresh,
+  onOpenGithubBlade,
 }) {
   return (
     <section class="queue-block">
@@ -2699,7 +3477,17 @@ function OpenClawQueue({
           <h3>{queue.definition.title}</h3>
           <p>{queue.definition.why}</p>
         </div>
-        <span class="chip">{queue.totalCount}</span>
+        <div class="queue-head-actions">
+          <span class="chip">{queue.totalCount}</span>
+          <button
+            class="icon-only"
+            type="button"
+            title="Refresh this queue from the live GitHub API without the local Gitcrawl overlay."
+            onClick={onRefresh}
+          >
+            <Icon name="refresh-cw" />
+          </button>
+        </div>
       </header>
       <code class="query-line">{queue.query}</code>
       {queue.error ? (
@@ -2709,6 +3497,9 @@ function OpenClawQueue({
         {queue.candidates.length ? (
           queue.candidates.map((candidate) => {
             const issueInWork = openClawRunnerHasIssueRun(runner, candidate.number, candidate.url);
+            const candidateEffort = reasoningEffort(candidate);
+            const candidateProof = proofMode(candidate);
+            const hasPrCoverage = openClawCandidateHasPrCoverage(candidate);
             return (
               <article class="candidate-row" key={`${queue.definition.id}-${candidate.number}`}>
                 <div class="candidate-main">
@@ -2727,26 +3518,49 @@ function OpenClawQueue({
                     {candidate.signals.needsLiveValidation ? (
                       <span class="chip warn">live proof</span>
                     ) : null}
+                    {hasPrCoverage ? <span class="chip danger">possible PR</span> : null}
                     {issueInWork ? <span class="chip warn">in work</span> : null}
                   </div>
+                  {hasPrCoverage ? <OpenClawCoverageWarning candidate={candidate} /> : null}
                 </div>
                 <div class="candidate-actions">
-                  <button onClick={() => window.open(candidate.url, "_blank", "noopener")}>
-                    <Icon name="external-link" />
+                  <OpenClawReasoningSelect
+                    candidate={candidate}
+                    value={candidateEffort}
+                    onChange={onReasoningChange}
+                  />
+                  <OpenClawProofModeSelect
+                    candidate={candidate}
+                    value={candidateProof}
+                    onChange={onProofModeChange}
+                  />
+                  <button
+                    class="icon-only"
+                    title="Open GitHub blade"
+                    onClick={() =>
+                      onOpenGithubBlade({
+                        url: candidate.url,
+                        title: `#${candidate.number} ${candidate.title}`,
+                        kind: "GitHub issue",
+                      })
+                    }
+                  >
+                    <Icon name="panel-right-open" />
                   </button>
-                  <button onClick={() => onCopyPrompt(candidate)}>
+                  <button onClick={() => onCopyPrompt(candidate, candidateEffort, candidateProof)}>
                     <Icon name="copy" />
                     Copy prompt
                   </button>
                   <button
-                    title={openClawTrackDisabledReason(candidate, runner)}
+                    title={openClawTrackDisabledReason(candidate, canStartWork, runner)}
                     disabled={
                       runner?.status !== "connected" ||
                       issueInWork ||
+                      !canStartWork ||
                       !candidate.signals.readyForPickup ||
                       runner?.trackingIssue === candidate.number
                     }
-                    onClick={() => onTrack(candidate)}
+                    onClick={() => onTrack(candidate, candidateEffort, candidateProof)}
                   >
                     <Icon name="list-checks" />
                     {issueInWork
@@ -2762,10 +3576,12 @@ function OpenClawQueue({
                       issueInWork ||
                       !canStartWork ||
                       !candidate.signals.readyForPickup ||
+                      hasPrCoverage ||
+                      openClawCandidateCoverageUnknown(candidate) ||
                       openClawRunnerStartCapacityReached(runner) ||
                       runner?.startingIssue === candidate.number
                     }
-                    onClick={() => onStartCodex(candidate)}
+                    onClick={() => onStartCodex(candidate, candidateEffort, candidateProof)}
                   >
                     <Icon name="square-terminal" />
                     {issueInWork
@@ -2782,7 +3598,7 @@ function OpenClawQueue({
                       !candidate.signals.readyForPickup ||
                       busyIssue === candidate.number
                     }
-                    onClick={() => onCreate(candidate)}
+                    onClick={() => onCreate(candidate, candidateEffort, candidateProof)}
                   >
                     {issueInWork
                       ? "On plate"
@@ -2802,8 +3618,16 @@ function OpenClawQueue({
   );
 }
 
-function OpenClawPullRequests({ pullRequests, error, handoffText, onHandoff }) {
+function OpenClawPullRequests({
+  pullRequests,
+  error,
+  handoffText,
+  onHandoff,
+  onRefresh,
+  onOpenGithubBlade,
+}) {
   const [busyPr, setBusyPr] = useState(null);
+  const [refreshingPr, setRefreshingPr] = useState(null);
   return (
     <section class="workflow-section pr-monitor">
       <header class="workflow-section-head">
@@ -2815,62 +3639,91 @@ function OpenClawPullRequests({ pullRequests, error, handoffText, onHandoff }) {
       {error ? <div class="workflow-banner error">{error}</div> : null}
       <div class="pr-list">
         {pullRequests.length ? (
-          pullRequests.map((pr) => (
-            <article class="pr-row" key={pr.number}>
-              <a href={pr.url} target="_blank" rel="noreferrer">
-                #{pr.number} {pr.title}
-              </a>
-              <div class="candidate-meta">
-                <span class={`chip ${openClawPrStatusTone(pr.signals)}`}>
-                  {openClawPrStatusLabel(pr.signals)}
-                </span>
-                <span
-                  class={`chip ${pr.checks.state === "green" ? "ok" : pr.checks.state === "failing" ? "danger" : "warn"}`}
+          pullRequests.map((pr) => {
+            const handoffReady = openClawPrReadyForHandoff(pr);
+            return (
+              <article class="pr-row" key={pr.number}>
+                <div class="pr-row-head">
+                  <a href={pr.url} target="_blank" rel="noreferrer">
+                    #{pr.number} {pr.title}
+                  </a>
+                  <button
+                    class="icon-only"
+                    type="button"
+                    title="Open GitHub blade"
+                    onClick={() =>
+                      onOpenGithubBlade({
+                        url: pr.url,
+                        title: `#${pr.number} ${pr.title}`,
+                        kind: "GitHub PR",
+                      })
+                    }
+                  >
+                    <Icon name="panel-right-open" />
+                  </button>
+                  <button
+                    class="icon-only"
+                    type="button"
+                    title="Refresh authored PRs from the live GitHub API."
+                    disabled={refreshingPr === pr.number}
+                    onClick={async () => {
+                      setRefreshingPr(pr.number);
+                      try {
+                        await onRefresh?.();
+                      } finally {
+                        setRefreshingPr(null);
+                      }
+                    }}
+                  >
+                    <Icon name="refresh-cw" />
+                  </button>
+                </div>
+                <div class="candidate-meta">
+                  <span class={`chip ${openClawPrStatusTone(pr.signals)}`}>
+                    {openClawPrStatusLabel(pr.signals)}
+                  </span>
+                  <span
+                    class={`chip ${pr.checks.state === "green" ? "ok" : pr.checks.state === "failing" ? "danger" : "warn"}`}
+                  >
+                    CI {pr.checks.state}
+                  </span>
+                  {pr.signals.mergeReady ? <span class="chip ok">merge ready</span> : null}
+                  {pr.signals.clawsweeperHumanReview ? (
+                    <span class="chip warn">human review</span>
+                  ) : null}
+                  {pr.signals.needsProof ? <span class="chip danger">needs proof</span> : null}
+                  {pr.signals.waitingOnAuthor ? (
+                    <span class="chip warn">waiting on author</span>
+                  ) : null}
+                  {pr.signals.proofSufficient ? (
+                    <span class="chip ok">proof sufficient</span>
+                  ) : null}
+                  {pr.checks.mantis ? <span class="chip">Mantis {pr.checks.mantis}</span> : null}
+                </div>
+                {pr.checks.failing.length ? (
+                  <p class="pr-detail">Failing: {pr.checks.failing.slice(0, 3).join(", ")}</p>
+                ) : pr.checks.pending.length ? (
+                  <p class="pr-detail">Pending: {pr.checks.pending.slice(0, 3).join(", ")}</p>
+                ) : null}
+                <button
+                  title={openClawPrHandoffReason(pr)}
+                  disabled={busyPr === pr.number}
+                  onClick={async () => {
+                    setBusyPr(pr.number);
+                    try {
+                      const text = await onHandoff(openClawPrHandoffInput(pr));
+                      await copyText(text);
+                    } finally {
+                      setBusyPr(null);
+                    }
+                  }}
                 >
-                  CI {pr.checks.state}
-                </span>
-                {pr.signals.mergeReady ? <span class="chip ok">merge ready</span> : null}
-                {pr.signals.clawsweeperHumanReview ? (
-                  <span class="chip warn">human review</span>
-                ) : null}
-                {pr.signals.needsProof ? <span class="chip danger">needs proof</span> : null}
-                {pr.signals.waitingOnAuthor ? (
-                  <span class="chip warn">waiting on author</span>
-                ) : null}
-                {pr.signals.proofSufficient ? <span class="chip ok">proof sufficient</span> : null}
-                {pr.checks.mantis ? <span class="chip">Mantis {pr.checks.mantis}</span> : null}
-              </div>
-              {pr.checks.failing.length ? (
-                <p class="pr-detail">Failing: {pr.checks.failing.slice(0, 3).join(", ")}</p>
-              ) : pr.checks.pending.length ? (
-                <p class="pr-detail">Pending: {pr.checks.pending.slice(0, 3).join(", ")}</p>
-              ) : null}
-              <button
-                disabled={busyPr === pr.number}
-                onClick={async () => {
-                  setBusyPr(pr.number);
-                  try {
-                    const text = await onHandoff({
-                      prUrl: pr.url,
-                      title: `#${pr.number} ${pr.title}`,
-                      summary: "Focused fix is ready for maintainer review.",
-                      proof: pr.signals.proofSufficient
-                        ? "ClawSweeper marked proof sufficient; local validation and Codex review completed."
-                        : "Local validation and Codex review completed.",
-                      ci: `CI ${pr.checks.state}`,
-                      clawsweeper: openClawPrStatusLabel(pr.signals),
-                    });
-                    await copyText(text);
-                  } finally {
-                    setBusyPr(null);
-                  }
-                }}
-              >
-                <Icon name="message-square" />
-                Handoff
-              </button>
-            </article>
-          ))
+                  <Icon name="message-square" />
+                  {handoffReady ? "Handoff" : "Handoff with warning"}
+                </button>
+              </article>
+            );
+          })
         ) : (
           <div class="empty">No authored open PRs found.</div>
         )}
@@ -2903,6 +3756,60 @@ function openClawPrStatusTone(signals) {
   return "warn";
 }
 
+function openClawPrReadyForHandoff(pr) {
+  return Boolean(
+    (pr?.signals?.readyForMaintainer || pr?.signals?.mergeReady) &&
+    !pr?.signals?.needsProof &&
+    !pr?.signals?.waitingOnAuthor &&
+    pr?.checks?.state === "green",
+  );
+}
+
+function openClawPrHandoffReason(pr) {
+  if (openClawPrReadyForHandoff(pr)) return "Copy maintainer handoff text.";
+  if (pr?.signals?.needsProof) return "Proof is still needed before maintainer handoff.";
+  if (pr?.signals?.waitingOnAuthor) return "The PR is waiting on author updates.";
+  if (pr?.checks?.state === "failing") return "Copy handoff text that calls out the failing CI.";
+  if (pr?.checks?.state === "pending") return "CI is still pending.";
+  return "Copy handoff text with the current proof, CI, and ClawSweeper caveats.";
+}
+
+function openClawPrHandoffInput(pr) {
+  const failing = Array.isArray(pr.checks?.failing) ? pr.checks.failing : [];
+  const pending = Array.isArray(pr.checks?.pending) ? pr.checks.pending : [];
+  const checkState = pr.checks?.state || "unknown";
+  const ready = openClawPrReadyForHandoff(pr);
+  const summary = ready
+    ? "PR appears ready for maintainer review based on current PR signals."
+    : pr.signals?.needsProof
+      ? "PR is not ready yet; proof is still needed."
+      : checkState === "failing"
+        ? "PR is not ready yet; CI is failing."
+        : "PR needs status review before maintainer handoff.";
+  const proof = pr.signals?.proofSufficient
+    ? "ClawSweeper marked proof sufficient; verify the PR body includes the proof details."
+    : pr.signals?.needsProof
+      ? "Proof is still needed before maintainer review."
+      : "Proof status is not confirmed by PR Monitor.";
+  const ci =
+    checkState === "failing"
+      ? `CI failing${failing.length ? `: ${failing.slice(0, 3).join(", ")}` : ""}`
+      : checkState === "green"
+        ? "CI green"
+        : pending.length
+          ? `CI pending: ${pending.slice(0, 3).join(", ")}`
+          : `CI ${checkState}`;
+  return {
+    prUrl: pr.url,
+    title: `#${pr.number} ${pr.title}`,
+    summary,
+    proof,
+    ci,
+    clawsweeper: openClawPrStatusLabel(pr.signals),
+    codexReview: "Codex review is not confirmed by PR Monitor.",
+  };
+}
+
 function LabelText({ text, help }) {
   return (
     <span class="label-text">
@@ -2920,6 +3827,100 @@ function LabelText({ text, help }) {
   );
 }
 
+function OpenClawCoverageWarning({ candidate }) {
+  const coverage = Array.isArray(candidate?.possiblePrCoverage)
+    ? candidate.possiblePrCoverage.slice(0, 3)
+    : [];
+  if (!coverage.length) return null;
+  return (
+    <div class="coverage-warning">
+      <Icon name="git-pull-request" />
+      <span>
+        Check possible open PR coverage before starting:
+        {coverage.map((pr, index) => (
+          <Fragment key={pr.url || pr.number}>
+            {index ? ", " : " "}
+            <a href={pr.url} target="_blank" rel="noreferrer" title={pr.reason}>
+              #{pr.number}
+            </a>
+          </Fragment>
+        ))}
+      </span>
+    </div>
+  );
+}
+
+function OpenClawReasoningSelect({ candidate, value, onChange }) {
+  const normalized = openClawNormalizeReasoningEffort(value);
+  return (
+    <label
+      class="candidate-select reasoning-select"
+      title={`Codex thinking mode for #${candidate?.number || "?"}. This overrides the saved default for this issue action only.`}
+    >
+      <Icon name="brain" />
+      <select
+        aria-label={`Codex thinking mode for issue ${candidate?.number || "?"}`}
+        value={normalized}
+        onInput={(event) => onChange(candidate, event.currentTarget.value)}
+      >
+        {openClawReasoningEfforts.map((effort) => (
+          <option value={effort} key={effort}>
+            {openClawReasoningEffortLabel(effort)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function OpenClawProofModeSelect({ candidate, value, onChange }) {
+  const normalized = openClawNormalizeProofMode(
+    value,
+    candidate?.signals?.needsLiveValidation ? "crabbox" : "auto",
+  );
+  return (
+    <label
+      class="candidate-select proof-select"
+      title={`Proof route for #${candidate?.number || "?"}. This is copied into the prompt and stored on Active Work.`}
+    >
+      <Icon name="flask-conical" />
+      <select
+        aria-label={`Proof mode for issue ${candidate?.number || "?"}`}
+        value={normalized}
+        onInput={(event) => onChange(candidate, event.currentTarget.value)}
+      >
+        {openClawProofModes.map((mode) => (
+          <option value={mode} key={mode}>
+            {openClawProofModeLabel(mode)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function openClawNormalizeReasoningEffort(value, fallback = "high") {
+  const effort = String(value || "")
+    .trim()
+    .toLowerCase();
+  return openClawReasoningEfforts.includes(effort) ? effort : fallback;
+}
+
+function openClawNormalizeProofMode(value, fallback = "auto") {
+  const mode = String(value || "")
+    .trim()
+    .toLowerCase();
+  return openClawProofModes.includes(mode) ? mode : fallback;
+}
+
+function openClawCandidateHasPrCoverage(candidate) {
+  return Array.isArray(candidate?.possiblePrCoverage) && candidate.possiblePrCoverage.length > 0;
+}
+
+function openClawCandidateCoverageUnknown(candidate) {
+  return Boolean(candidate?.prCoverageUnknown);
+}
+
 function openClawPreferenceDraft(preferences) {
   return {
     roleMode: preferences?.roleMode || "trial_maintainer",
@@ -2929,6 +3930,7 @@ function openClawPreferenceDraft(preferences) {
     dailyUsageDropLimit: String(preferences?.dailyUsageDropLimit ?? 5),
     maxParallelWorkers: String(preferences?.maxParallelWorkers ?? 2),
     minimumIssueAgeHours: String(preferences?.minimumIssueAgeHours ?? 6),
+    codexReasoningEffort: openClawNormalizeReasoningEffort(preferences?.codexReasoningEffort),
     weeklyRemainingBaseline:
       preferences?.weeklyRemainingBaseline === null ||
       preferences?.weeklyRemainingBaseline === undefined
@@ -2948,6 +3950,15 @@ function openClawStartDisabledReason(candidate, canStartWork, runner) {
     return "This issue is already on Active Work.";
   }
   if (!canStartWork) return "New work is paused by your Open PR or usage limits.";
+  if (openClawCandidateCoverageUnknown(candidate)) {
+    return (
+      candidate?.prCoverageWarning ||
+      "Possible open PR coverage lookup did not complete. Refresh or connect local Gitcrawl coverage before starting."
+    );
+  }
+  if (openClawCandidateHasPrCoverage(candidate)) {
+    return "Possible open PR coverage was found. Inspect those PRs before starting a competing Codex run.";
+  }
   if (candidate?.signals?.ageGate === "too-new") {
     return "Waiting for the configured minimum issue age. Set Min issue age to 0 for fork or dummy testing.";
   }
@@ -2961,10 +3972,17 @@ function openClawStartDisabledReason(candidate, canStartWork, runner) {
   return "Start local Codex with this issue prompt.";
 }
 
-function openClawTrackDisabledReason(candidate, runner) {
+function openClawTrackDisabledReason(candidate, canStartWork, runner) {
   if (runner?.status !== "connected") return "Connect the local Codex bridge first.";
   if (openClawRunnerHasIssueRun(runner, candidate?.number, candidate?.url)) {
     return "This issue is already on Active Work.";
+  }
+  if (!canStartWork) return "New work is paused by your Open PR or usage limits.";
+  if (openClawCandidateCoverageUnknown(candidate)) {
+    return "Track a manual PR coverage investigation without posting an issue claim.";
+  }
+  if (openClawCandidateHasPrCoverage(candidate)) {
+    return "Track a manual coverage investigation without posting an issue claim.";
   }
   if (candidate?.signals?.ageGate === "too-new") {
     return "Waiting for the configured minimum issue age. Set Min issue age to 0 for fork or dummy testing.";
@@ -2976,29 +3994,30 @@ function openClawTrackDisabledReason(candidate, runner) {
   return "Track this issue as manually started work.";
 }
 
-function openClawCandidatePrompt(candidate) {
-  const prompt = String(candidate?.workPrompt || "");
-  if (openClawPromptLooksComplete(prompt)) return prompt;
-  return buildOpenClawIssuePrompt({
-    ...candidate,
-    author: candidate?.author || null,
-    createdAt: candidate?.createdAt || null,
-    labels: Array.isArray(candidate?.labels) ? candidate.labels : [],
-    number: Number(candidate?.number) || 0,
-    queueId: candidate?.queueId || "openclaw",
-    signals: candidate?.signals || {},
-    title: candidate?.title || "OpenClaw issue",
-    updatedAt: candidate?.updatedAt || null,
-    url: candidate?.url || "https://github.com/openclaw/openclaw/issues",
-  });
-}
-
-function openClawPromptLooksComplete(prompt) {
-  return (
-    /AGENTS\.md/.test(prompt) &&
-    /CONTRIBUTING\.md/.test(prompt) &&
-    /codex review/i.test(prompt) &&
-    /ready for maintainer look/i.test(prompt)
+function openClawCandidatePrompt(candidate, codexReasoningEffort, proofMode, claimCommentStatus) {
+  return buildOpenClawIssuePrompt(
+    {
+      ...candidate,
+      author: candidate?.author || null,
+      createdAt: candidate?.createdAt || null,
+      labels: Array.isArray(candidate?.labels) ? candidate.labels : [],
+      number: Number(candidate?.number) || 0,
+      possiblePrCoverage: Array.isArray(candidate?.possiblePrCoverage)
+        ? candidate.possiblePrCoverage
+        : [],
+      prCoverageUnknown: Boolean(candidate?.prCoverageUnknown),
+      prCoverageWarning: candidate?.prCoverageWarning || null,
+      queueId: candidate?.queueId || "openclaw",
+      signals: candidate?.signals || {},
+      title: candidate?.title || "OpenClaw issue",
+      updatedAt: candidate?.updatedAt || null,
+      url: candidate?.url || "https://github.com/openclaw/openclaw/issues",
+    },
+    {
+      codexReasoningEffort: openClawNormalizeReasoningEffort(codexReasoningEffort),
+      proofMode: openClawNormalizeProofMode(proofMode),
+      claimCommentStatus,
+    },
   );
 }
 
@@ -3120,6 +4139,347 @@ async function fetchOpenClawRunnerRunLog(runner, run) {
   return body;
 }
 
+async function hydrateOpenClawWorkflowWithLocalCoverage(workflow, runner) {
+  if (!workflow || runner?.status !== "connected") return workflow;
+  const snapshot = await fetchOpenClawRunnerGitcrawlWorkflow(runner, workflow).catch(() => null);
+  if (snapshot?.ok) return applyOpenClawLocalWorkflow(workflow, snapshot);
+  const issueNumbers = openClawWorkflowIssueNumbers(workflow);
+  if (!issueNumbers.length) return workflow;
+  const coverage = await fetchOpenClawRunnerGitcrawlCoverage(runner, workflow.repo, issueNumbers);
+  return applyOpenClawLocalCoverage(workflow, coverage, issueNumbers.length);
+}
+
+async function hydrateOpenClawSpecificIssueWithLocalCoverage(result, runner) {
+  const candidate = result?.candidate;
+  const issueNumber = Number(candidate?.number);
+  if (!candidate || runner?.status !== "connected" || !Number.isFinite(issueNumber)) return result;
+  const coverage = await fetchOpenClawRunnerGitcrawlCoverage(runner, result.repo, [
+    Math.trunc(issueNumber),
+  ]);
+  const workflow = applyOpenClawLocalCoverage(
+    {
+      repo: result.repo,
+      queues: [{ candidates: [candidate], error: result.coverageError || null }],
+    },
+    coverage,
+    1,
+  );
+  const queue = workflow.queues?.[0] || {};
+  const hydratedCandidate = queue.candidates?.[0] || candidate;
+  return {
+    ...result,
+    candidate: hydratedCandidate ? { ...hydratedCandidate, repo: result.repo } : null,
+    coverageError: queue.error || "",
+    localCoverage: workflow.localCoverage,
+  };
+}
+
+async function fetchOpenClawRunnerGitcrawlCoverage(runner, repo, issueNumbers) {
+  const response = await fetch(`${resolveRunnerUrl(runner?.url)}/gitcrawl/coverage`, {
+    method: "POST",
+    headers: {
+      ...openClawRunnerHeaders(runner),
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      repo: openClawNormalizeRepo(repo) || "openclaw/openclaw",
+      issueNumbers,
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.ok === false) {
+    throw new Error(body.error || `Runner returned ${response.status}`);
+  }
+  return body;
+}
+
+async function fetchOpenClawRunnerGitcrawlWorkflow(runner, workflow) {
+  const response = await fetch(`${resolveRunnerUrl(runner?.url)}/gitcrawl/workflow`, {
+    method: "POST",
+    headers: {
+      ...openClawRunnerHeaders(runner),
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      repo: openClawNormalizeRepo(workflow?.repo) || "openclaw/openclaw",
+      githubLogin: workflow?.githubLogin || workflow?.preferences?.githubLogin || "",
+      roleMode: workflow?.preferences?.roleMode || "trial_maintainer",
+      minimumIssueAgeHours: workflow?.preferences?.minimumIssueAgeHours ?? 6,
+      codexReasoningEffort: workflow?.preferences?.codexReasoningEffort || "high",
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.ok === false) {
+    throw new Error(body.error || `Runner returned ${response.status}`);
+  }
+  return body;
+}
+
+function applyOpenClawLocalWorkflow(workflow, snapshot) {
+  const localQueues = Array.isArray(snapshot?.queues) ? snapshot.queues : [];
+  const queues = localQueues.length
+    ? mergeOpenClawLocalQueues(workflow?.queues, localQueues)
+    : workflow?.queues;
+  const pullRequests = mergeOpenClawLocalPullRequests(
+    workflow?.pullRequests,
+    snapshot?.pullRequests,
+  );
+  const governor = applyOpenClawLocalGovernor(workflow?.governor, pullRequests);
+  return {
+    ...workflow,
+    queues,
+    pullRequests,
+    governor,
+    localCoverage: {
+      source: snapshot?.localCoverage?.source || snapshot?.source || "gitcrawl",
+      lastSyncAt: snapshot?.localCoverage?.lastSyncAt || null,
+      warning: snapshot?.localCoverage?.warning || null,
+      lookupIssueCount: snapshot?.localCoverage?.lookupIssueCount || 0,
+      coveredIssueCount: snapshot?.localCoverage?.coveredIssueCount || 0,
+      queueSource: "gitcrawl",
+    },
+  };
+}
+
+function mergeOpenClawLocalQueues(existingQueues, localQueues) {
+  const existingById = new Map(
+    (Array.isArray(existingQueues) ? existingQueues : []).map((queue) => [
+      queue?.definition?.id,
+      queue,
+    ]),
+  );
+  return localQueues.map((localQueue) => {
+    const existing = existingById.get(localQueue?.definition?.id) || {};
+    const existingCandidates = new Map(
+      (Array.isArray(existing.candidates) ? existing.candidates : []).map((candidate) => [
+        Number(candidate?.number),
+        candidate,
+      ]),
+    );
+    return {
+      ...existing,
+      ...localQueue,
+      definition: existing.definition || localQueue.definition,
+      query: existing.query || localQueue.query,
+      error: stripOpenClawCoverageError(existing.error),
+      candidates: Array.isArray(localQueue.candidates)
+        ? localQueue.candidates.map((candidate) =>
+            mergeOpenClawLocalCandidate(
+              candidate,
+              existingCandidates.get(Number(candidate?.number)),
+            ),
+          )
+        : existing.candidates || [],
+      source: "gitcrawl",
+    };
+  });
+}
+
+function mergeOpenClawLocalCandidate(localCandidate, existingCandidate) {
+  if (!existingCandidate) {
+    return {
+      ...localCandidate,
+      repo: snapshotRepoFromCandidate(localCandidate) || localCandidate?.repo || "",
+    };
+  }
+  const possiblePrCoverage = mergeOpenClawPrCoverage(
+    existingCandidate.possiblePrCoverage,
+    localCandidate.possiblePrCoverage,
+  );
+  return {
+    ...existingCandidate,
+    ...localCandidate,
+    possiblePrCoverage,
+    prCoverageUnknown: Boolean(localCandidate.prCoverageUnknown),
+    prCoverageWarning:
+      existingCandidate.prCoverageWarning || localCandidate.prCoverageWarning || null,
+    repo:
+      snapshotRepoFromCandidate(localCandidate) ||
+      existingCandidate.repo ||
+      localCandidate?.repo ||
+      "",
+  };
+}
+
+function snapshotRepoFromCandidate(candidate) {
+  const match = String(candidate?.url || "").match(/github\.com\/([^/]+\/[^/]+)\/issues\//i);
+  return match?.[1]?.toLowerCase() || "";
+}
+
+function mergeOpenClawLocalPullRequests(existingPullRequests, localPullRequests) {
+  const existingItems = Array.isArray(existingPullRequests?.items)
+    ? existingPullRequests.items
+    : [];
+  if (!localPullRequests || !Array.isArray(localPullRequests.items)) return existingPullRequests;
+  const localItems = localPullRequests.items;
+  const localScannedLogin = localPullRequests.loginConfigured === true;
+  const localByNumber = new Map(localItems.map((item) => [Number(item?.number), item]));
+  const mergedItems = existingItems.length
+    ? existingItems.map((item) =>
+        mergeOpenClawLocalPullRequest(item, localByNumber.get(Number(item?.number))),
+      )
+    : localItems;
+  for (const localItem of localItems) {
+    if (!mergedItems.some((item) => Number(item?.number) === Number(localItem?.number))) {
+      mergedItems.push(localItem);
+    }
+  }
+  return {
+    ...existingPullRequests,
+    items: mergedItems,
+    error: existingPullRequests?.error || localPullRequests?.error || null,
+    source:
+      existingPullRequests?.error && !existingItems.length && localScannedLogin
+        ? "gitcrawl"
+        : existingPullRequests?.source,
+    localSource: "gitcrawl",
+  };
+}
+
+function mergeOpenClawLocalPullRequest(existing, localItem) {
+  if (!localItem) return existing;
+  const existingCheckState = existing?.checks?.state || "unknown";
+  const localCheckState = localItem?.checks?.state || "unknown";
+  return {
+    ...localItem,
+    ...existing,
+    labels:
+      Array.isArray(existing?.labels) && existing.labels.length
+        ? existing.labels
+        : localItem.labels,
+    signals: existing?.signals || localItem.signals,
+    checks:
+      existingCheckState === "unknown" && localCheckState !== "unknown"
+        ? localItem.checks
+        : existing.checks,
+    source: existing?.source || "github",
+    localSource: "gitcrawl",
+  };
+}
+
+function applyOpenClawLocalGovernor(governor, pullRequests) {
+  if (!governor || !Array.isArray(pullRequests?.items)) return governor;
+  const openPrCount = pullRequests.items.length;
+  const activeOpenPrLimit = Number(governor.activeOpenPrLimit) || 0;
+  const hardOpenPrCap = Number(governor.hardOpenPrCap) || activeOpenPrLimit || 0;
+  const prLookupError = pullRequests?.error ? `Open PR lookup failed: ${pullRequests.error}` : null;
+  const reasons = (Array.isArray(governor.reasons) ? governor.reasons : []).filter((reason) => {
+    const text = String(reason);
+    if (/^Open PR lookup failed:/i.test(text)) return Boolean(prLookupError);
+    return (
+      !/^Personal open PR limit reached/i.test(text) && !/^Hard OpenClaw cap reached/i.test(text)
+    );
+  });
+  if (prLookupError && !reasons.some((reason) => /^Open PR lookup failed:/i.test(String(reason)))) {
+    reasons.push(prLookupError);
+  }
+  if (hardOpenPrCap && openPrCount >= hardOpenPrCap) {
+    reasons.push(`Hard OpenClaw cap reached (${openPrCount}/${hardOpenPrCap}).`);
+  } else if (activeOpenPrLimit && openPrCount >= activeOpenPrLimit) {
+    reasons.push(`Personal open PR limit reached (${openPrCount}/${activeOpenPrLimit}).`);
+  }
+  return {
+    ...governor,
+    openPrCount,
+    canStartNewWork: reasons.length === 0,
+    reasons,
+  };
+}
+
+function openClawWorkflowIssueNumbers(workflow) {
+  const numbers = new Set();
+  for (const queue of Array.isArray(workflow?.queues) ? workflow.queues : []) {
+    for (const candidate of Array.isArray(queue?.candidates) ? queue.candidates : []) {
+      const number = Number(candidate?.number);
+      if (Number.isFinite(number) && number > 0) numbers.add(Math.trunc(number));
+    }
+  }
+  return [...numbers].slice(0, 80);
+}
+
+function applyOpenClawLocalCoverage(workflow, coverage, lookupIssueCount) {
+  const coverageMap = new Map(
+    Object.entries(coverage?.coverage || {}).map(([number, items]) => [
+      Number(number),
+      Array.isArray(items) ? items : [],
+    ]),
+  );
+  const coveredIssues = new Set();
+  const queues = (Array.isArray(workflow?.queues) ? workflow.queues : []).map((queue) => ({
+    ...queue,
+    error: stripOpenClawCoverageError(queue?.error),
+    candidates: (Array.isArray(queue?.candidates) ? queue.candidates : []).map((candidate) => {
+      const issueNumber = Number(candidate?.number);
+      if (!coverageMap.has(issueNumber)) return candidate;
+      const localCoverage = coverageMap.get(issueNumber) || [];
+      if (localCoverage.length) coveredIssues.add(issueNumber);
+      return {
+        ...candidate,
+        prCoverageUnknown: false,
+        prCoverageWarning: null,
+        possiblePrCoverage: localCoverage.length
+          ? mergeOpenClawPrCoverage(candidate?.possiblePrCoverage, localCoverage)
+          : Array.isArray(candidate?.possiblePrCoverage)
+            ? candidate.possiblePrCoverage
+            : [],
+      };
+    }),
+  }));
+  return {
+    ...workflow,
+    queues,
+    localCoverage: {
+      source: coverage?.source || "gitcrawl",
+      lastSyncAt: coverage?.lastSyncAt || null,
+      warning: coverage?.warning || null,
+      lookupIssueCount,
+      coveredIssueCount: coveredIssues.size,
+    },
+  };
+}
+
+function mergeOpenClawPrCoverage(existing, localCoverage) {
+  const merged = [];
+  const seen = new Set();
+  for (const item of [...(Array.isArray(existing) ? existing : []), ...localCoverage]) {
+    const number = Number(item?.number);
+    if (!Number.isFinite(number) || number <= 0 || seen.has(number)) continue;
+    seen.add(number);
+    merged.push({
+      number,
+      title: String(item?.title || `PR #${number}`),
+      url: String(item?.url || `https://github.com/openclaw/openclaw/pull/${number}`),
+      author: item?.author || null,
+      draft: Boolean(item?.draft),
+      updatedAt: item?.updatedAt || null,
+      reason: item?.reason || "Local Gitcrawl snapshot found this PR mention.",
+    });
+  }
+  return merged.slice(0, 5);
+}
+
+function stripOpenClawCoverageError(error) {
+  const text = String(error || "").trim();
+  if (!text) return null;
+  const parts = text
+    .split(";")
+    .map((part) => part.trim())
+    .filter(
+      (part) => part && !/^Possible PR coverage (?:lookup failed|scan is partial)/i.test(part),
+    );
+  return parts.join("; ") || null;
+}
+
+function openClawNormalizeRepo(repo) {
+  const text = String(repo || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https:\/\/github\.com\//, "")
+    .replace(/\.git$/, "")
+    .replace(/\/+$/, "");
+  return /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(text) ? text : "";
+}
+
 function openClawRunnerCommand(runner, preferences) {
   let port = "4545";
   try {
@@ -3128,7 +4488,12 @@ function openClawRunnerCommand(runner, preferences) {
   const token = String(runner?.token || "").trim();
   const tokenArg = token ? ` --token ${token}` : "";
   const maxActive = Math.max(1, Math.min(16, Number(preferences?.maxParallelWorkers) || 1));
-  return `pnpm openclaw:runner -- --workspace C:\\path\\to\\openclaw --port ${port} --max-active ${maxActive}${tokenArg}`;
+  const reasoningEffort = openClawNormalizeReasoningEffort(preferences?.codexReasoningEffort);
+  return `pnpm openclaw:runner -- --workspace C:\\path\\to\\openclaw --worktree-dir C:\\path\\to\\openclaw-worktrees --port ${port} --max-active ${maxActive} --reasoning-effort ${reasoningEffort}${tokenArg}`;
+}
+
+function openClawRunWorktreePath(run) {
+  return run?.worktreePath || "";
 }
 
 function openClawRunActive(run) {
@@ -3155,11 +4520,12 @@ function openClawRunnerStartCapacityReached(runner) {
         (run) => run && !run.finishedAt && ["starting", "running"].includes(run.status),
       ).length
     : 0;
-  return Math.max(reportedActive, visibleLiveRuns) >= maxActive;
+  const active = Math.max(reportedActive, visibleLiveRuns);
+  return active >= maxActive;
 }
 
 function openClawRunInactive(run) {
-  return ["completed", "dry-run", "failed", "stale"].includes(run?.status);
+  return ["completed", "dry-run", "failed", "handoff-sent", "stale"].includes(run?.status);
 }
 
 function openClawRunTone(run) {
@@ -3227,6 +4593,17 @@ function openClawRunWhen(run) {
   return new Date(parsed).toLocaleDateString();
 }
 
+function formatOpenClawTimestamp(timestamp) {
+  const parsed = Date.parse(String(timestamp || ""));
+  if (!Number.isFinite(parsed)) return "unknown";
+  return new Date(parsed).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function openClawRunNextAction(run) {
   switch (run?.status) {
     case "running":
@@ -3240,6 +4617,8 @@ function openClawRunNextAction(run) {
       return "Check proof, PR state, CI, and ClawSweeper; then mark ready or park.";
     case "ready":
       return "Ready for maintainer look; use the handoff text once the PR/proof links are in place.";
+    case "handoff-sent":
+      return "Discord handoff was sent; wait for maintainer feedback, merge, or follow-up requests.";
     case "parked":
       return "Parked until missing proof, Mantis, CI, or a maintainer/reporter decision is available.";
     case "failed":
@@ -3459,6 +4838,8 @@ function openClawRunwayCandidates(queues, runner, limit) {
       if (!key) continue;
       if (openClawRunnerHasIssueRun(runner, withQueue.number, withQueue.url)) continue;
       if (!withQueue.signals?.readyForPickup) continue;
+      if (openClawCandidateHasPrCoverage(withQueue)) continue;
+      if (openClawCandidateCoverageUnknown(withQueue)) continue;
       const entry = {
         candidate: withQueue,
         score: openClawCandidatePriorityRank(withQueue, queue?.definition),
@@ -3526,6 +4907,8 @@ function openClawWorkerRunwayBrief(runway, runner) {
         return [
           `Lane ${lane.index}: #${lane.run.issueNumber || "?"} [${openClawRunLabel(lane.run)}] ${lane.run.title || "OpenClaw issue"}`,
           lane.run.issueUrl ? `Issue: ${lane.run.issueUrl}` : "",
+          lane.run.codexReasoningEffort ? `Thinking: ${lane.run.codexReasoningEffort}` : "",
+          lane.run.proofMode ? `Proof: ${lane.run.proofMode}` : "",
           `Next: ${openClawRunNextAction(lane.run)}`,
         ]
           .filter(Boolean)
@@ -3538,6 +4921,11 @@ function openClawWorkerRunwayBrief(runway, runner) {
           `Issue: ${lane.candidate.url}`,
           priority ? `Priority: ${priority}` : "",
           `Queue: ${lane.candidate.queueId}`,
+          openClawCandidateHasPrCoverage(lane.candidate)
+            ? `Possible PR coverage: ${lane.candidate.possiblePrCoverage
+                .map((pr) => `#${pr.number}`)
+                .join(", ")}`
+            : "",
           `Why: ${openClawCandidateWhy(lane.candidate)}`,
         ]
           .filter(Boolean)
@@ -3595,6 +4983,7 @@ function openClawMissionControl(runs, runner) {
 function openClawRunAttentionScore(run) {
   const statusOrder = {
     ready: 0,
+    "handoff-sent": 0.5,
     failed: 1,
     stale: 2,
     completed: 3,
@@ -3619,6 +5008,8 @@ function openClawMissionLabel(run) {
   switch (run?.status) {
     case "ready":
       return "handoff ready";
+    case "handoff-sent":
+      return "handoff sent";
     case "failed":
       return "needs repair";
     case "stale":
@@ -3643,6 +5034,8 @@ function openClawMissionHeadline(run) {
   switch (run?.status) {
     case "ready":
       return "copy the maintainer handoff";
+    case "handoff-sent":
+      return "wait for maintainer feedback or merge";
     case "failed":
       return "repair the failed run or park it";
     case "stale":
@@ -3661,6 +5054,299 @@ function openClawMissionHeadline(run) {
     default:
       return "update this plate";
   }
+}
+
+function openClawMasterLoopPlan({ queues, runner, pullRequests, governor }) {
+  const runs = Array.isArray(runner?.runs)
+    ? runner.runs.filter((run) => run && !run.archivedAt)
+    : [];
+  const prs = Array.isArray(pullRequests) ? pullRequests : [];
+  const candidates = openClawLoopCandidates(queues, runs);
+  const lanes = openClawLoopLaneDefinitions().map((lane) => ({ ...lane, items: [] }));
+  const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
+
+  for (const candidate of candidates) {
+    const item = openClawCandidateLoopItem(candidate);
+    if (candidate.prCoverageUnknown || openClawCandidateHasPrCoverage(candidate)) {
+      laneById.get("validating")?.items.push({
+        ...item,
+        badge: candidate.prCoverageUnknown ? "coverage unknown" : "possible PR",
+        tone: candidate.prCoverageUnknown ? "warn" : "danger",
+        detail: "Re-check possible PR coverage before starting work.",
+      });
+    } else if (candidate.signals?.needsLiveValidation) {
+      laneById.get("validating")?.items.push({
+        ...item,
+        badge: "live proof",
+        tone: "warn",
+        detail: "Validate with Crabbox or Blacksmith Testbox before PR readiness.",
+      });
+    } else if (candidate.signals?.readyForPickup) {
+      laneById.get("ready")?.items.push(item);
+    }
+  }
+
+  for (const run of runs) {
+    const item = openClawRunLoopItem(run);
+    if (run.status === "handoff-sent") {
+      laneById.get("handoff_sent")?.items.push(item);
+    } else if (run.status === "ready") {
+      laneById.get("ready_handoff")?.items.push(item);
+    } else if (run.status === "parked") {
+      laneById.get("validating")?.items.push({
+        ...item,
+        badge: "parked",
+        tone: "warn",
+        detail: run.note || "Needs proof or a human decision before continuing.",
+      });
+    } else if (openClawRunInactive(run)) {
+      const checklist = openClawRunChecklist(run);
+      const hasPr = checklist.some((step) => step.label === "PR" && step.done);
+      const readyish = checklist.every((step) => step.done);
+      laneById.get(hasPr && !readyish ? "pr_not_ready" : "coding")?.items.push(item);
+    } else if (openClawRunActive(run) || run.status === "tracked") {
+      laneById.get(openClawValidPrUrl(run.prUrl) ? "pr_not_ready" : "coding")?.items.push(item);
+    } else {
+      laneById.get("coding")?.items.push(item);
+    }
+  }
+
+  for (const pr of prs) {
+    const item = openClawPrLoopItem(pr);
+    if (pr.state && String(pr.state).toLowerCase() !== "open") {
+      laneById.get("done")?.items.push(item);
+    } else if (openClawPrReadyForHandoff(pr) || pr.signals?.readyForMaintainer) {
+      laneById.get("ready_handoff")?.items.push(item);
+    } else {
+      laneById.get("pr_not_ready")?.items.push(item);
+    }
+  }
+
+  for (const lane of lanes) {
+    lane.items = openClawUniqueLoopItems(lane.items).slice(0, 8);
+  }
+
+  const blockers = [
+    ...(governor?.reasons || []),
+    runner?.status === "connected" ? "" : "Local Codex bridge is not connected.",
+  ].filter(Boolean);
+  const gates = [
+    {
+      label: "workers",
+      value: `${runs.filter(openClawRunOpenPlate).length}/${runner?.info?.maxActive || "?"}`,
+      tone: openClawRunnerStartCapacityReached(runner) ? "warn" : "ok",
+    },
+    {
+      label: "new work",
+      value: governor?.canStartNewWork ? "allowed" : "paused",
+      tone: governor?.canStartNewWork ? "ok" : "warn",
+    },
+    {
+      label: "bridge",
+      value: runner?.status || "unknown",
+      tone: runner?.status === "connected" ? "ok" : "warn",
+    },
+    {
+      label: "proof",
+      value: laneById.get("validating")?.items.length || 0,
+      tone: laneById.get("validating")?.items.length ? "warn" : "ok",
+    },
+  ];
+  const decision = openClawLoopDecision(lanes, blockers);
+  const itemsTotal = lanes.reduce((sum, lane) => sum + lane.items.length, 0);
+  return {
+    lanes,
+    gates,
+    blockers,
+    decision,
+    itemsTotal,
+    mode: blockers.length ? "observe only" : "ready to loop",
+    gateTone: blockers.length ? "warn" : "ok",
+    summary:
+      "The master loop watches queue candidates, active Codex plates, authored PRs, proof state, CI, and ClawSweeper readiness, then moves work through the contribution pipeline.",
+  };
+}
+
+function openClawLoopLaneDefinitions() {
+  return [
+    {
+      id: "ready",
+      title: "Ready to start",
+      description: "Eligible queue items with no known PR coverage.",
+      tone: "ok",
+    },
+    {
+      id: "validating",
+      title: "Validating",
+      description: "Coverage, repro, latest release, main, or Testbox proof checks.",
+      tone: "warn",
+    },
+    {
+      id: "coding",
+      title: "Coding",
+      description: "Codex/tmux/manual work before PR readiness.",
+      tone: "",
+    },
+    {
+      id: "pr_not_ready",
+      title: "PR not ready",
+      description: "Open PRs needing proof, CI, review, or ClawSweeper updates.",
+      tone: "warn",
+    },
+    {
+      id: "ready_handoff",
+      title: "Ready handoff",
+      description: "Maintainer-look candidates ready for Discord text.",
+      tone: "ok",
+    },
+    {
+      id: "handoff_sent",
+      title: "Handoff sent",
+      description: "Waiting for maintainer feedback or merge.",
+      tone: "",
+    },
+    {
+      id: "done",
+      title: "Merged / closed",
+      description: "Completed rows to archive after the short lookback.",
+      tone: "ok",
+    },
+  ];
+}
+
+function openClawLoopCandidates(queues, runs) {
+  const activeKeys = new Set(
+    (Array.isArray(runs) ? runs : [])
+      .filter((run) => run && !run.archivedAt)
+      .map((run) => openClawIssueKey(run.issueNumber, run.issueUrl)),
+  );
+  return (Array.isArray(queues) ? queues : [])
+    .flatMap((queue) =>
+      (queue.candidates || []).map((candidate) => ({
+        ...candidate,
+        queueId: candidate.queueId || queue.definition?.id,
+      })),
+    )
+    .filter((candidate) => {
+      const key = openClawIssueKey(candidate.number, candidate.url);
+      return key && !activeKeys.has(key);
+    })
+    .slice(0, 24);
+}
+
+function openClawCandidateLoopItem(candidate) {
+  return {
+    id: `issue-${candidate.number}`,
+    title: `#${candidate.number} ${candidate.title}`,
+    url: candidate.url,
+    badge: openClawCandidatePriorityLabel(candidate),
+    tone: candidate.signals?.readyForPickup ? "ok" : "warn",
+    detail: openClawCandidateWhy(candidate),
+  };
+}
+
+function openClawRunLoopItem(run) {
+  const activity = openClawRunActivityLines(run);
+  return {
+    id: `run-${run.id}`,
+    title: `#${run.issueNumber || "?"} ${run.title || "OpenClaw issue"}`,
+    url: openClawValidPrUrl(run.prUrl) || run.issueUrl,
+    badge: openClawRunLabel(run),
+    tone: openClawRunTone(run),
+    detail: activity[activity.length - 1] || openClawRunNextAction(run),
+  };
+}
+
+function openClawPrLoopItem(pr) {
+  return {
+    id: `pr-${pr.number}`,
+    title: `#${pr.number} ${pr.title || "OpenClaw PR"}`,
+    url: pr.url,
+    badge: openClawPrStatusLabel(pr.signals),
+    tone: openClawPrReadyForHandoff(pr) || pr.signals?.readyForMaintainer ? "ok" : "warn",
+    detail: openClawPrHandoffReason(pr) || "Track CI, proof, and ClawSweeper readiness.",
+  };
+}
+
+function openClawUniqueLoopItems(items) {
+  const seen = new Set();
+  const unique = [];
+  for (const item of items) {
+    const key = item.url || item.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+  return unique;
+}
+
+function openClawLoopDecision(lanes, blockers) {
+  if (blockers.length) {
+    return {
+      action: "Observe and refresh",
+      reason: blockers[0],
+      tone: "warn",
+    };
+  }
+  const byId = new Map(lanes.map((lane) => [lane.id, lane]));
+  if (byId.get("ready_handoff")?.items.length) {
+    return {
+      action: "Prepare Discord handoff",
+      reason: "At least one PR appears ready for maintainer look.",
+      tone: "ok",
+    };
+  }
+  if (byId.get("pr_not_ready")?.items.length) {
+    return {
+      action: "Close PR readiness gaps",
+      reason: "Open PRs still need proof, CI, Codex review, or ClawSweeper readiness.",
+      tone: "warn",
+    };
+  }
+  if (byId.get("coding")?.items.length) {
+    return {
+      action: "Watch active work",
+      reason: "Codex/manual plates are still in progress before PR readiness.",
+      tone: "warn",
+    };
+  }
+  if (byId.get("validating")?.items.length) {
+    return {
+      action: "Validate before coding",
+      reason: "Items need PR coverage, repro, main/latest, or remote proof checks.",
+      tone: "warn",
+    };
+  }
+  if (byId.get("ready")?.items.length) {
+    return {
+      action: "Start next issue",
+      reason: "A queueable issue is ready and no higher-priority active loop item is blocking.",
+      tone: "ok",
+    };
+  }
+  return {
+    action: "Idle",
+    reason: "No eligible or active loop items are visible.",
+    tone: "",
+  };
+}
+
+function openClawMasterLoopBrief(loop) {
+  return [
+    "OpenClaw master loop brief",
+    `Mode: ${loop.mode}`,
+    `Next: ${loop.decision.action} - ${loop.decision.reason}`,
+    loop.blockers.length ? `Blockers: ${loop.blockers.join(" ")}` : "",
+    "",
+    ...loop.lanes.map((lane) =>
+      [
+        `${lane.title}: ${lane.items.length}`,
+        ...lane.items.slice(0, 4).map((item) => `- ${item.title}: ${item.detail}`),
+      ].join("\n"),
+    ),
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function openClawRunChecklist(run) {
@@ -3727,7 +5413,17 @@ function openClawReadinessRadar(runs) {
 }
 
 function openClawRunKnownText(run) {
-  return [run?.status, run?.note, openClawValidPrUrl(run?.prUrl), run?.title, run?.queueId]
+  const note = String(run?.note || "");
+  const noteEvidence = /\b(pending|waiting|missing|needs?|blocked)\b/i.test(note) ? "" : note;
+  return [
+    run?.status,
+    noteEvidence,
+    openClawValidPrUrl(run?.prUrl),
+    run?.title,
+    run?.queueId,
+    run?.worktreePath,
+    run?.worktreeBranch,
+  ]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
@@ -3766,12 +5462,26 @@ function openClawActiveWorkBrief(runs, runner) {
     .join("\n");
 }
 
+function openClawRunActivityLines(run) {
+  return Array.isArray(run?.lastActivityLines)
+    ? run.lastActivityLines
+        .map((line) => String(line || "").trim())
+        .filter(Boolean)
+        .slice(-4)
+    : [];
+}
+
 function openClawRunBriefLines(run) {
   const prUrl = openClawValidPrUrl(run?.prUrl);
   return [
     `- #${run?.issueNumber || "?"} [${openClawRunLabel(run)}] ${run?.title || "OpenClaw issue"}`,
     run?.issueUrl ? `  Issue: ${run.issueUrl}` : "",
     prUrl ? `  PR: ${prUrl}` : "  PR: not linked in Claw Queue yet",
+    run?.claimCommentUrl ? `  Claim: ${run.claimCommentUrl}` : "",
+    run?.codexReasoningEffort ? `  Thinking: ${run.codexReasoningEffort}` : "",
+    run?.proofMode ? `  Proof: ${run.proofMode}` : "",
+    openClawRunWorktreePath(run) ? `  Worktree: ${openClawRunWorktreePath(run)}` : "",
+    run?.worktreeBranch ? `  Branch: ${run.worktreeBranch}` : "",
     `  Next: ${openClawRunNextAction(run)}`,
     run?.note ? `  Note: ${run.note}` : "",
     "",
@@ -3786,8 +5496,16 @@ function openClawRunResumePrompt(run) {
     `Title: ${run?.title || "OpenClaw issue"}`,
     `Issue number: #${run?.issueNumber || "?"}`,
     run?.queueId ? `Queue: ${run.queueId}` : "",
+    run?.codexReasoningEffort
+      ? `Codex thinking: ${openClawReasoningEffortLabel(run.codexReasoningEffort)} (${run.codexReasoningEffort})`
+      : "",
+    run?.proofMode ? `Proof mode: ${openClawProofModeLabel(run.proofMode)} (${run.proofMode})` : "",
     `Current Claw Queue status: ${openClawRunLabel(run)}`,
     prUrl ? `Known PR: ${prUrl}` : "Known PR: not linked in Claw Queue yet",
+    run?.claimCommentUrl ? `Claim comment: ${run.claimCommentUrl}` : "",
+    openClawRunWorktreePath(run) ? `Worktree: ${openClawRunWorktreePath(run)}` : "",
+    run?.baseWorkspace ? `Base checkout: ${run.baseWorkspace}` : "",
+    run?.worktreeBranch ? `Branch: ${run.worktreeBranch}` : "",
     run?.logPath ? `Runner log: ${run.logPath}` : "",
     run?.note ? `Current note: ${run.note}` : "",
     "",
@@ -4168,6 +5886,27 @@ function CopyCommand({ value }) {
 async function copyText(value) {
   if (!navigator.clipboard) return;
   await navigator.clipboard.writeText(String(value || ""));
+}
+
+function openGithubBladeTarget(target) {
+  const url = String(target?.url || target?.issueUrl || target?.prUrl || "").trim();
+  return {
+    url,
+    title: String(target?.title || githubTitleFromUrl(url) || "GitHub"),
+    kind: String(target?.kind || githubKindFromUrl(url) || "GitHub link"),
+  };
+}
+
+function githubTitleFromUrl(url) {
+  const match = String(url || "").match(/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)/i);
+  if (!match) return "";
+  return `${match[1]}/${match[2]} ${match[3] === "pull" ? "PR" : "issue"} #${match[4]}`;
+}
+
+function githubKindFromUrl(url) {
+  if (/\/pull\/\d+/i.test(String(url || ""))) return "GitHub PR";
+  if (/\/issues\/\d+/i.test(String(url || ""))) return "GitHub issue";
+  return "GitHub link";
 }
 
 function RefPreview({ preview, canCreate, onCreate }) {
@@ -5431,6 +7170,54 @@ function Drawer({ id, open, title, wide, onClose, children }) {
   );
 }
 
+function GithubBlade({ blade, onClose }) {
+  const open = Boolean(blade?.url);
+  return (
+    <aside class={`github-blade ${open ? "open" : ""}`} aria-hidden={open ? "false" : "true"}>
+      <section class="github-blade-panel" aria-label="GitHub blade">
+        <header class="github-blade-head">
+          <div>
+            <span class="section-kicker">GITHUB BLADE</span>
+            <h2>{blade?.title || "GitHub"}</h2>
+            {blade?.kind ? <p>{blade.kind}</p> : null}
+          </div>
+          <button class="icon" aria-label="Close GitHub blade" onClick={onClose}>
+            <Icon name="x" />
+          </button>
+        </header>
+        {blade?.url ? (
+          <>
+            <div class="github-blade-actions">
+              <button type="button" onClick={() => copyText(blade.url)}>
+                <Icon name="copy" />
+                Copy link
+              </button>
+              <button type="button" onClick={() => window.open(blade.url, "_blank", "noopener")}>
+                <Icon name="external-link" />
+                Open GitHub
+              </button>
+            </div>
+            <div class="github-blade-url">
+              <code>{blade.url}</code>
+            </div>
+            <div class="github-blade-frame-wrap">
+              <iframe
+                title={blade.title || "GitHub preview"}
+                src={blade.url}
+                sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+              />
+              <div class="github-blade-fallback">
+                <strong>GitHub may block embedded previews.</strong>
+                <span>Use Open GitHub if this panel stays blank.</span>
+              </div>
+            </div>
+          </>
+        ) : null}
+      </section>
+    </aside>
+  );
+}
+
 function Icon({ name }) {
   const nodes = globalThis.lucideIconNodes?.[name];
   if (!nodes) return null;
@@ -5541,6 +7328,7 @@ function initialAppView() {
   ) {
     return "openclaw";
   }
+  if (location.pathname === clawLoopPath || location.pathname === `${clawLoopPath}/`) return "loop";
   return "fleet";
 }
 
@@ -5553,16 +7341,29 @@ function restoreSessionReturnUrl() {
     const saved = sessionStorage.getItem(loginReturnKey);
     if (!saved || !history.replaceState) return;
     const url = new URL(saved, location.origin);
-    const isSessionUrl =
-      url.pathname === "/sessions" ||
-      url.pathname === "/sessions/" ||
-      url.pathname.startsWith("/sessions/") ||
-      url.pathname.startsWith("/app/sessions/");
-    if (url.origin !== location.origin || !isSessionUrl) return;
+    if (url.origin !== location.origin || !isLoginReturnUrl(url)) return;
     if (location.pathname !== "/app" && location.pathname !== "/app/") return;
     sessionStorage.removeItem(loginReturnKey);
-    history.replaceState(null, "", `${url.pathname}${url.search}`);
+    history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
   } catch {}
+}
+
+function isLoginReturnUrl(url) {
+  const pathname = url.pathname;
+  return (
+    pathname === "/sessions" ||
+    pathname === "/sessions/" ||
+    pathname.startsWith("/sessions/") ||
+    pathname.startsWith("/app/sessions/") ||
+    pathname === clawQueuePath ||
+    pathname === `${clawQueuePath}/` ||
+    pathname === clawLoopPath ||
+    pathname === `${clawLoopPath}/` ||
+    pathname === "/app/openclaw" ||
+    pathname === "/app/openclaw/" ||
+    pathname === "/app/board" ||
+    pathname === "/app/board/"
+  );
 }
 
 function isTerminalKeyTarget(event) {
