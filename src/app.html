@@ -347,6 +347,32 @@
       a:hover {
         color: var(--primary-dark);
       }
+      button.text-link {
+        min-width: 0;
+        height: auto;
+        justify-content: flex-start;
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+        color: var(--primary);
+        padding: 0;
+        font: inherit;
+        font-weight: 800;
+        text-align: left;
+        text-decoration: none;
+        white-space: normal;
+      }
+      button.text-link:hover {
+        color: var(--primary-dark);
+        background: transparent;
+        box-shadow: none;
+      }
+      button.text-link.inline {
+        display: inline;
+        min-height: 0;
+        font-weight: 800;
+        vertical-align: baseline;
+      }
 
       .app {
         min-height: 100vh;
@@ -2476,7 +2502,8 @@
         font-weight: 800;
       }
       .worker-lane-head strong,
-      .worker-lane-body a {
+      .worker-lane-body a,
+      .worker-lane-body .text-link {
         min-width: 0;
         overflow: hidden;
         color: var(--ink);
@@ -2500,7 +2527,8 @@
         display: grid;
         gap: 8px;
       }
-      .worker-lane-body a {
+      .worker-lane-body a,
+      .worker-lane-body .text-link {
         font-size: 13px;
         font-weight: 700;
       }
@@ -2882,7 +2910,8 @@
         display: grid;
         gap: 6px;
       }
-      .active-work-main a {
+      .active-work-main a,
+      .active-work-main .text-link {
         min-width: 0;
         overflow: hidden;
         color: var(--ink);
@@ -3222,7 +3251,9 @@
         gap: 6px;
       }
       .candidate-main a,
-      .pr-row-head a {
+      .candidate-main .text-link,
+      .pr-row-head a,
+      .pr-row-head .text-link {
         min-width: 0;
         overflow: hidden;
         color: var(--ink);
@@ -3316,7 +3347,8 @@
         height: 15px;
         color: #f87171;
       }
-      .coverage-warning a {
+      .coverage-warning a,
+      .coverage-warning .text-link {
         color: #fb7185;
         font-weight: 750;
       }

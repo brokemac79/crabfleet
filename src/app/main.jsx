@@ -2250,6 +2250,19 @@ function OpenClawPreferencesPanel({ preferences, loading, onSave }) {
 function OpenClawRunnerPanel({ runner, preferences, onChange, onCheck }) {
   const status = runner?.status || "unknown";
   const command = openClawRunnerCommand(runner, preferences);
+  const invalidToken = /missing or invalid runner token/i.test(String(runner?.error || ""));
+  async function clearRunnerToken() {
+    const next = onChange({ token: "" });
+    await Promise.resolve(onCheck(next)).catch(() => {});
+  }
+  async function generateRunnerToken() {
+    const next = onChange({
+      token: openClawGenerateRunnerToken(),
+      status: "unknown",
+      error: "Token changed. Restart the local runner with Runner command, then click Test.",
+    });
+    await copyText(openClawRunnerCommand(next, preferences));
+  }
   return (
     <section class="openclaw-runner">
       <div>
@@ -2283,6 +2296,16 @@ function OpenClawRunnerPanel({ runner, preferences, onChange, onCheck }) {
           <Icon name="copy" />
           Runner command
         </button>
+        {invalidToken ? (
+          <button type="button" onClick={clearRunnerToken}>
+            Clear token
+          </button>
+        ) : null}
+        {invalidToken ? (
+          <button type="button" onClick={generateRunnerToken}>
+            New token
+          </button>
+        ) : null}
       </div>
       {runner?.error ? <div class="workflow-banner error">{runner.error}</div> : null}
       {runner?.info?.dryRun ? (
@@ -2362,9 +2385,19 @@ function OpenClawSpecificIssuePanel({
       {candidate ? (
         <article class="candidate-row specific-issue-row">
           <div class="candidate-main">
-            <a href={candidate.url} target="_blank" rel="noreferrer">
+            <button
+              type="button"
+              class="text-link"
+              onClick={() =>
+                onOpenGithubBlade({
+                  url: candidate.url,
+                  title: `#${candidate.number} ${candidate.title}`,
+                  kind: "GitHub issue",
+                })
+              }
+            >
               #{candidate.number} {candidate.title}
-            </a>
+            </button>
             <div class="candidate-meta">
               {candidate.author ? <span class="chip">@{candidate.author}</span> : null}
               <span class={`chip ${candidate.signals.readyForPickup ? "ok" : "warn"}`}>
@@ -2378,7 +2411,12 @@ function OpenClawSpecificIssuePanel({
               {hasPrCoverage ? <span class="chip danger">possible PR</span> : null}
               {issueInWork ? <span class="chip warn">in work</span> : null}
             </div>
-            {hasPrCoverage ? <OpenClawCoverageWarning candidate={candidate} /> : null}
+            {hasPrCoverage ? (
+              <OpenClawCoverageWarning
+                candidate={candidate}
+                onOpenGithubBlade={onOpenGithubBlade}
+              />
+            ) : null}
           </div>
           <div class="candidate-actions">
             <OpenClawReasoningSelect
@@ -2734,6 +2772,12 @@ function OpenClawWorkerRunway({
 
 function OpenClawMasterLoopPanel({ queues, runner, pullRequests, governor, onOpenGithubBlade }) {
   const loop = openClawMasterLoopPlan({ queues, runner, pullRequests, governor });
+  const openItemBlade = (item) =>
+    onOpenGithubBlade({
+      url: item.url,
+      title: item.title,
+      kind: githubKindFromUrl(item.url),
+    });
   return (
     <section class="openclaw-loop-panel" aria-label="OpenClaw master loop">
       <header class="workflow-section-head">
@@ -2779,27 +2823,40 @@ function OpenClawMasterLoopPanel({ queues, runner, pullRequests, governor, onOpe
             <div class="loop-lane-items">
               {lane.items.length ? (
                 lane.items.slice(0, 4).map((item) => (
-                  <div class="loop-card" key={`${lane.id}:${item.id}`}>
+                  <div
+                    class="loop-card"
+                    key={`${lane.id}:${item.id}`}
+                    role="button"
+                    tabIndex="0"
+                    onClick={() => openItemBlade(item)}
+                    onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) return;
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openItemBlade(item);
+                      }
+                    }}
+                  >
                     <span class={`chip ${item.tone}`}>{item.badge}</span>
                     <strong>{item.title}</strong>
                     <small>{item.detail}</small>
                     <div class="loop-card-actions">
                       <button
                         type="button"
-                        onClick={() =>
-                          onOpenGithubBlade({
-                            url: item.url,
-                            title: item.title,
-                            kind: githubKindFromUrl(item.url),
-                          })
-                        }
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openItemBlade(item);
+                        }}
                       >
                         <Icon name="panel-right-open" />
                         Blade
                       </button>
                       <button
                         type="button"
-                        onClick={() => window.open(item.url, "_blank", "noopener")}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          window.open(item.url, "_blank", "noopener");
+                        }}
                         disabled={!item.url}
                       >
                         <Icon name="external-link" />
@@ -2833,6 +2890,7 @@ function OpenClawWorkerLane({
   onTrack,
   onStartCodex,
   onCreate,
+  onOpenGithubBlade,
 }) {
   const prUrl = openClawValidPrUrl(lane.run?.prUrl);
   const priorityLabel = lane.candidate ? openClawCandidatePriorityLabel(lane.candidate) : null;
@@ -2849,9 +2907,19 @@ function OpenClawWorkerLane({
       </header>
       {lane.run ? (
         <div class="worker-lane-body">
-          <a href={lane.run.issueUrl || "#"} target="_blank" rel="noreferrer">
+          <button
+            type="button"
+            class="text-link"
+            onClick={() =>
+              onOpenGithubBlade({
+                url: prUrl || lane.run.issueUrl,
+                title: `#${lane.run.issueNumber || "?"} ${lane.run.title || "OpenClaw issue"}`,
+                kind: prUrl ? "GitHub PR" : "GitHub issue",
+              })
+            }
+          >
             #{lane.run.issueNumber || "?"} {lane.run.title || "OpenClaw issue"}
-          </a>
+          </button>
           <div class="candidate-meta">
             <span class={`chip ${openClawRunTone(lane.run)}`}>{openClawRunLabel(lane.run)}</span>
             {lane.run.queueId ? <span class="chip">{lane.run.queueId}</span> : null}
@@ -2888,9 +2956,19 @@ function OpenClawWorkerLane({
         </div>
       ) : lane.candidate ? (
         <div class="worker-lane-body">
-          <a href={lane.candidate.url} target="_blank" rel="noreferrer">
+          <button
+            type="button"
+            class="text-link"
+            onClick={() =>
+              onOpenGithubBlade({
+                url: lane.candidate.url,
+                title: `#${lane.candidate.number} ${lane.candidate.title}`,
+                kind: "GitHub issue",
+              })
+            }
+          >
             #{lane.candidate.number} {lane.candidate.title}
-          </a>
+          </button>
           <div class="candidate-meta">
             <span class="chip ok">eligible</span>
             {priorityLabel ? <span class="chip warn">{priorityLabel}</span> : null}
@@ -2904,7 +2982,10 @@ function OpenClawWorkerLane({
             ) : null}
           </div>
           {openClawCandidateHasPrCoverage(lane.candidate) ? (
-            <OpenClawCoverageWarning candidate={lane.candidate} />
+            <OpenClawCoverageWarning
+              candidate={lane.candidate}
+              onOpenGithubBlade={onOpenGithubBlade}
+            />
           ) : null}
           <p>{openClawCandidateWhy(lane.candidate)}</p>
           <div class="worker-lane-actions">
@@ -3220,9 +3301,19 @@ function OpenClawActiveWorkPanel({ runner, onRefresh, onUpdate, onOpenGithubBlad
             return (
               <article class="active-work-row" key={run.id}>
                 <div class="active-work-main">
-                  <a href={run.issueUrl || "#"} target="_blank" rel="noreferrer">
+                  <button
+                    type="button"
+                    class="text-link"
+                    onClick={() =>
+                      onOpenGithubBlade({
+                        url: prUrl || run.issueUrl,
+                        title: `#${run.issueNumber || "?"} ${run.title || "OpenClaw issue"}`,
+                        kind: prUrl ? "GitHub PR" : "GitHub issue",
+                      })
+                    }
+                  >
                     #{run.issueNumber || "?"} {run.title || "OpenClaw issue"}
-                  </a>
+                  </button>
                   <div class="candidate-meta">
                     <span class={`chip ${openClawRunTone(run)}`}>{openClawRunLabel(run)}</span>
                     {run.queueId ? <span class="chip">{run.queueId}</span> : null}
@@ -3503,9 +3594,19 @@ function OpenClawQueue({
             return (
               <article class="candidate-row" key={`${queue.definition.id}-${candidate.number}`}>
                 <div class="candidate-main">
-                  <a href={candidate.url} target="_blank" rel="noreferrer">
+                  <button
+                    type="button"
+                    class="text-link"
+                    onClick={() =>
+                      onOpenGithubBlade({
+                        url: candidate.url,
+                        title: `#${candidate.number} ${candidate.title}`,
+                        kind: "GitHub issue",
+                      })
+                    }
+                  >
                     #{candidate.number} {candidate.title}
-                  </a>
+                  </button>
                   <div class="candidate-meta">
                     {candidate.author ? <span class="chip">@{candidate.author}</span> : null}
                     <span class={`chip ${candidate.signals.readyForPickup ? "ok" : "warn"}`}>
@@ -3521,7 +3622,12 @@ function OpenClawQueue({
                     {hasPrCoverage ? <span class="chip danger">possible PR</span> : null}
                     {issueInWork ? <span class="chip warn">in work</span> : null}
                   </div>
-                  {hasPrCoverage ? <OpenClawCoverageWarning candidate={candidate} /> : null}
+                  {hasPrCoverage ? (
+                    <OpenClawCoverageWarning
+                      candidate={candidate}
+                      onOpenGithubBlade={onOpenGithubBlade}
+                    />
+                  ) : null}
                 </div>
                 <div class="candidate-actions">
                   <OpenClawReasoningSelect
@@ -3644,9 +3750,19 @@ function OpenClawPullRequests({
             return (
               <article class="pr-row" key={pr.number}>
                 <div class="pr-row-head">
-                  <a href={pr.url} target="_blank" rel="noreferrer">
+                  <button
+                    type="button"
+                    class="text-link"
+                    onClick={() =>
+                      onOpenGithubBlade({
+                        url: pr.url,
+                        title: `#${pr.number} ${pr.title}`,
+                        kind: "GitHub PR",
+                      })
+                    }
+                  >
                     #{pr.number} {pr.title}
-                  </a>
+                  </button>
                   <button
                     class="icon-only"
                     type="button"
@@ -3827,7 +3943,7 @@ function LabelText({ text, help }) {
   );
 }
 
-function OpenClawCoverageWarning({ candidate }) {
+function OpenClawCoverageWarning({ candidate, onOpenGithubBlade }) {
   const coverage = Array.isArray(candidate?.possiblePrCoverage)
     ? candidate.possiblePrCoverage.slice(0, 3)
     : [];
@@ -3840,9 +3956,22 @@ function OpenClawCoverageWarning({ candidate }) {
         {coverage.map((pr, index) => (
           <Fragment key={pr.url || pr.number}>
             {index ? ", " : " "}
-            <a href={pr.url} target="_blank" rel="noreferrer" title={pr.reason}>
+            <button
+              type="button"
+              class="text-link inline"
+              title={pr.reason}
+              onClick={() =>
+                onOpenGithubBlade
+                  ? onOpenGithubBlade({
+                      url: pr.url,
+                      title: `#${pr.number} possible open PR`,
+                      kind: "GitHub PR",
+                    })
+                  : window.open(pr.url, "_blank", "noopener")
+              }
+            >
               #{pr.number}
-            </a>
+            </button>
           </Fragment>
         ))}
       </span>
@@ -4490,6 +4619,14 @@ function openClawRunnerCommand(runner, preferences) {
   const maxActive = Math.max(1, Math.min(16, Number(preferences?.maxParallelWorkers) || 1));
   const reasoningEffort = openClawNormalizeReasoningEffort(preferences?.codexReasoningEffort);
   return `pnpm openclaw:runner -- --workspace C:\\path\\to\\openclaw --worktree-dir C:\\path\\to\\openclaw-worktrees --port ${port} --max-active ${maxActive} --reasoning-effort ${reasoningEffort}${tokenArg}`;
+}
+
+function openClawGenerateRunnerToken() {
+  if (globalThis.crypto?.randomUUID) return `oc-${globalThis.crypto.randomUUID()}`;
+  const bytes = new Uint8Array(16);
+  globalThis.crypto?.getRandomValues?.(bytes);
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `oc-${hex || Date.now().toString(36)}`;
 }
 
 function openClawRunWorktreePath(run) {
