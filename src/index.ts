@@ -79,6 +79,9 @@ import {
 
 type Role = "viewer" | "maintainer" | "owner";
 
+const openClawQueueCandidateFetchLimit = 24;
+const openClawQueueVisibleCandidateLimit = 6;
+
 const defaultInteractiveCommand = "codex --yolo";
 
 type RuntimeEnv = Env & {
@@ -252,6 +255,21 @@ type GitHubPullRequestPayload = {
   draft?: boolean;
   created_at: string;
   updated_at: string;
+};
+
+type GitHubIssueTimelineEventPayload = {
+  event: string;
+  source?: {
+    issue?: {
+      number: number;
+      title: string;
+      html_url: string;
+      state?: string;
+      user?: { login: string } | null;
+      updated_at?: string | null;
+      pull_request?: unknown;
+    } | null;
+  } | null;
 };
 
 type GitHubCheckRunPayload = {
@@ -2449,7 +2467,8 @@ async function readOpenClawWorkflow(
   );
   const token = await openClawWorkflowGitHubToken(request, env, repo);
   const queues = queuesForOpenClawRole(effectivePreferences.roleMode);
-  const [rawQueueResults, pullRequests] = await Promise.all([
+  const rejectedIssues = openClawRejectedIssueNumbers(url);
+  const [fetchedQueueResults, pullRequests] = await Promise.all([
     Promise.all(
       queues.map((queue) =>
         fetchOpenClawQueue(
@@ -2466,10 +2485,12 @@ async function readOpenClawWorkflow(
       ? fetchOpenClawPullRequests(env, token, repo, githubLogin)
       : Promise.resolve({ items: [], error: "GitHub login is not configured" }),
   ]);
+  const rawQueueResults = applyOpenClawRejectedIssues(fetchedQueueResults, rejectedIssues);
   const coverage = await fetchOpenClawPrCoverageForQueues(token, repo, rawQueueResults).catch(
     (error) => ({
       map: new Map<number, OpenClawPrCoverage[]>(),
       error: `Possible PR coverage lookup failed: ${errorMessage(error)}`,
+      unknown: new Set<number>(),
     }),
   );
   const queueResults = hydrateOpenClawPartialQueueResults(
@@ -2478,6 +2499,7 @@ async function readOpenClawWorkflow(
       coverage.map,
       effectivePreferences.codexReasoningEffort,
       coverage.error,
+      coverage.unknown,
     ),
     effectivePreferences.codexReasoningEffort,
   ).map((result) =>
@@ -2554,12 +2576,17 @@ async function readOpenClawIssue(
   ]).catch((error) => ({
     map: new Map<number, OpenClawPrCoverage[]>(),
     error: `Possible PR coverage lookup failed: ${errorMessage(error)}`,
+    unknown: new Set<number>(),
   }));
+  const timelineCoverageUnknown = coverage.unknown.has(candidate.number);
   const withCoverage = {
     ...candidate,
     possiblePrCoverage: coverage.map.get(candidate.number) ?? [],
-    prCoverageUnknown: openClawPrCoverageErrorBlocksPickup(coverage.error),
-    prCoverageWarning: coverage.error,
+    prCoverageUnknown:
+      openClawPrCoverageErrorBlocksPickup(coverage.error) || timelineCoverageUnknown,
+    prCoverageWarning: timelineCoverageUnknown
+      ? "Possible PR coverage timeline scan did not complete for this issue."
+      : coverage.error,
   };
   return {
     repo: target.repo,
@@ -2896,7 +2923,11 @@ async function fetchOpenClawQueue(
   try {
     const candidates: OpenClawCandidate[] = [];
     let totalCount = 0;
-    for (let page = 1; page <= 3 && candidates.length < 6; page += 1) {
+    for (
+      let page = 1;
+      page <= 3 && candidates.length < openClawQueueCandidateFetchLimit;
+      page += 1
+    ) {
       const payload = await githubSearchIssues<GitHubSearchIssueItem>(
         env,
         token,
@@ -2926,7 +2957,7 @@ async function fetchOpenClawQueue(
       definition,
       query,
       totalCount: totalCount || candidates.length,
-      candidates: candidates.slice(0, 6),
+      candidates: candidates.slice(0, openClawQueueCandidateFetchLimit),
       error: null,
     };
   } catch (error) {
@@ -2971,7 +3002,7 @@ async function fetchOpenClawQueueFromRest(
 ): Promise<OpenClawQueueResult> {
   const candidates: OpenClawCandidate[] = [];
   let totalCount = 0;
-  for (let page = 1; page <= 3 && candidates.length < 6; page += 1) {
+  for (let page = 1; page <= 3 && candidates.length < openClawQueueCandidateFetchLimit; page += 1) {
     const payload = await githubApi<GitHubSearchIssueItem[]>(
       token,
       openClawIssueListPath(repo, definition, page, now),
@@ -2997,7 +3028,7 @@ async function fetchOpenClawQueueFromRest(
     definition,
     query: buildOpenClawIssueSearchQuery(repo, definition, now),
     totalCount: Math.max(totalCount, candidates.length),
-    candidates: candidates.slice(0, 6),
+    candidates: candidates.slice(0, openClawQueueCandidateFetchLimit),
     error: null,
   };
 }
@@ -3006,19 +3037,32 @@ async function fetchOpenClawPrCoverageForQueues(
   token: string | undefined,
   repo: string,
   results: OpenClawQueueResult[],
-): Promise<{ map: Map<number, OpenClawPrCoverage[]>; error: string | null }> {
+): Promise<{
+  map: Map<number, OpenClawPrCoverage[]>;
+  error: string | null;
+  unknown: Set<number>;
+}> {
   const candidates = uniqueOpenClawCandidates(results.flatMap((result) => result.candidates));
-  return fetchOpenClawPrCoverageForCandidates(token, repo, candidates);
+  const timelineCandidates = uniqueOpenClawCandidates(
+    results.flatMap((result) => result.candidates.slice(0, openClawQueueVisibleCandidateLimit)),
+  );
+  return fetchOpenClawPrCoverageForCandidates(token, repo, candidates, timelineCandidates);
 }
 
 async function fetchOpenClawPrCoverageForCandidates(
   token: string | undefined,
   repo: string,
   candidates: OpenClawCandidate[],
-): Promise<{ map: Map<number, OpenClawPrCoverage[]>; error: string | null }> {
+  timelineCandidates = candidates,
+): Promise<{
+  map: Map<number, OpenClawPrCoverage[]>;
+  error: string | null;
+  unknown: Set<number>;
+}> {
   const candidateByNumber = new Map(candidates.map((candidate) => [candidate.number, candidate]));
   const map = new Map<number, OpenClawPrCoverage[]>();
-  if (!candidateByNumber.size) return { map, error: null };
+  const unknown = new Set<number>();
+  if (!candidateByNumber.size) return { map, error: null, unknown };
 
   const maxPages = 2;
   let complete = false;
@@ -3053,12 +3097,71 @@ async function fetchOpenClawPrCoverageForCandidates(
     }
   }
 
+  (await addOpenClawTimelinePrCoverage(token, repo, timelineCandidates, map)).forEach((number) =>
+    unknown.add(number),
+  );
+
   return {
     map,
+    unknown,
     error: complete
       ? null
       : `Possible PR coverage scan is partial after ${maxPages * 100} recent open PRs.`,
   };
+}
+
+async function addOpenClawTimelinePrCoverage(
+  token: string | undefined,
+  repo: string,
+  candidates: OpenClawCandidate[],
+  map: Map<number, OpenClawPrCoverage[]>,
+): Promise<Set<number>> {
+  const pageLimit = 3;
+  const batchSize = 8;
+  const unknown = new Set<number>();
+  async function scan(candidate: OpenClawCandidate): Promise<boolean> {
+    for (let page = 1; page <= pageLimit; page += 1) {
+      let events: GitHubIssueTimelineEventPayload[] = [];
+      try {
+        events = await githubApi<GitHubIssueTimelineEventPayload[]>(
+          token,
+          `/repos/${repo}/issues/${candidate.number}/timeline?per_page=100&page=${page}`,
+        );
+      } catch {
+        return false;
+      }
+      for (const event of events) {
+        const source = event.source?.issue;
+        if (!source?.pull_request) continue;
+        if (source.state && source.state.toLowerCase() !== "open") continue;
+        const coverage: OpenClawPrCoverage = {
+          number: source.number,
+          title: source.title,
+          url: source.html_url,
+          author: source.user?.login ?? null,
+          draft: false,
+          updatedAt: source.updated_at ?? null,
+          reason: `GitHub timeline links PR #${source.number} to issue #${candidate.number}`,
+        };
+        const existing = map.get(candidate.number) ?? [];
+        if (!existing.some((item) => item.number === coverage.number)) {
+          existing.push(coverage);
+          map.set(candidate.number, existing);
+        }
+      }
+      if (events.length < 100) return true;
+    }
+    return false;
+  }
+  for (let offset = 0; offset < candidates.length; offset += batchSize) {
+    const batch = candidates.slice(offset, offset + batchSize);
+    const complete = await Promise.all(batch.map(scan));
+    complete.forEach((isComplete, index) => {
+      const candidate = batch[index];
+      if (!isComplete && candidate) unknown.add(candidate.number);
+    });
+  }
+  return unknown;
 }
 
 function attachOpenClawPrCoverage(
@@ -3066,16 +3169,23 @@ function attachOpenClawPrCoverage(
   coverage: Map<number, OpenClawPrCoverage[]>,
   codexReasoningEffort: OpenClawReasoningEffort,
   coverageError: string | null = null,
+  coverageUnknown = new Set<number>(),
 ): OpenClawQueueResult[] {
   return results.map((result) => ({
     ...result,
     candidates: result.candidates.map((candidate) => {
       const coverageBlocksPickup = openClawPrCoverageErrorBlocksPickup(coverageError);
+      const possiblePrCoverage =
+        coverage.get(candidate.number) ?? candidate.possiblePrCoverage ?? [];
+      const timelineCoverageUnknown = coverageUnknown.has(candidate.number);
+      const warning = timelineCoverageUnknown
+        ? "Possible PR coverage timeline scan did not complete for this issue."
+        : coverageError;
       const next = {
         ...candidate,
-        possiblePrCoverage: coverage.get(candidate.number) ?? candidate.possiblePrCoverage ?? [],
-        prCoverageUnknown: coverageBlocksPickup,
-        prCoverageWarning: coverageError,
+        possiblePrCoverage,
+        prCoverageUnknown: coverageBlocksPickup || timelineCoverageUnknown,
+        prCoverageWarning: warning,
       };
       return {
         ...next,
@@ -3137,6 +3247,27 @@ function openClawIssueListPath(
   return `/repos/${repo}/issues?${params.toString()}`;
 }
 
+function openClawRejectedIssueNumbers(url: URL): Set<number> {
+  const rejected = new Set<number>();
+  for (const value of String(url.searchParams.get("rejected") || "").split(",")) {
+    const number = Number(value.trim());
+    if (Number.isFinite(number) && number > 0) rejected.add(Math.trunc(number));
+  }
+  return rejected;
+}
+
+function applyOpenClawRejectedIssues(
+  results: OpenClawQueueResult[],
+  rejected: Set<number>,
+): OpenClawQueueResult[] {
+  return results.map((result) => ({
+    ...result,
+    candidates: result.candidates
+      .filter((candidate) => !rejected.has(candidate.number))
+      .slice(0, openClawQueueVisibleCandidateLimit),
+  }));
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -3166,7 +3297,7 @@ function hydrateOpenClawPartialQueueResults(
           openClawCandidatePriorityRank(left, result.definition) -
             openClawCandidatePriorityRank(right, result.definition) || left.number - right.number,
       )
-      .slice(0, 6);
+      .slice(0, openClawQueueCandidateFetchLimit);
     if (!candidates.length) return result;
     return {
       ...result,

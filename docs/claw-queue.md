@@ -210,7 +210,9 @@ The swimlanes are inferred automatically:
 
 Use **Copy loop brief** when you want a concise status dump. The intended later phases are: auto-move rows, auto-generate handoffs, then optionally auto-start Codex workers within user limits. The default behavior remains observe/recommend first.
 
-Each swimlane tile has **Blade** and **Open** actions. **Blade** keeps the issue or PR in-context beside the swimlanes; **Open** launches the GitHub page directly in a browser tab.
+Each swimlane tile has **Blade** and **Open** actions. Candidate tiles also have **Reject**. **Blade** keeps the issue or PR in-context beside the swimlanes; **Open** launches the GitHub page directly in a browser tab. **Reject** hides that repo-specific candidate from your local Claw Queue and Loop views with a short reason, without mutating GitHub or affecting other users. The hidden list is shown as **Local rejects** and individual issues can be restored.
+
+Claw Queue checks possible PR coverage in two ways. It scans recent open PR titles/bodies for issue references, and it checks the GitHub issue timeline for cross-referenced pull requests. These matches remain visible as `possible PR` because they can be noisy and should be manually validated or rejected.
 
 ## Active Work
 

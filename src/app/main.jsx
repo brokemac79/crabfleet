@@ -51,6 +51,8 @@ const clawQueuePath = "/app/claw-queue";
 const clawLoopPath = "/app/claw-loop";
 const openClawRunnerUrlStorageKey = "crabbox-openclaw-runner-url";
 const openClawRunnerTokenStorageKey = "crabbox-openclaw-runner-token";
+const openClawRejectedIssuesStorageKey = "crabbox-openclaw-rejected-issues-v1";
+const openClawVisibleQueueCandidateLimit = 6;
 const defaultOpenClawRunnerUrl = "http://127.0.0.1:4545";
 const emptyState = {
   cards: [],
@@ -119,6 +121,7 @@ function App() {
     handoffText: "",
   });
   const [openClawRunner, setOpenClawRunner] = useState(loadOpenClawRunnerSettings);
+  const [openClawRejectedIssues, setOpenClawRejectedIssues] = useState(loadOpenClawRejectedIssues);
   const stateRef = useRef(state);
   const authMethodsRef = useRef(authMethods);
   const signedInRef = useRef(signedIn);
@@ -565,6 +568,11 @@ function App() {
     const query = new URLSearchParams();
     if (params.repo) query.set("repo", params.repo);
     if (params.login) query.set("login", params.login);
+    const rejected = openClawRejectedIssueNumbersForRepo(
+      openClawRejectedIssues,
+      params.repo || openClawState.data?.repo || openClawState.data?.preferences?.targetRepo,
+    );
+    if (rejected.length) query.set("rejected", rejected.join(","));
     const queryText = query.toString();
     setOpenClawState((current) => ({ ...current, loading: true, error: "" }));
     try {
@@ -1223,6 +1231,44 @@ function App() {
     });
   }
 
+  function rejectOpenClawIssue(candidate, reason = "") {
+    if (!candidate?.number) return;
+    const fallbackReason = openClawCandidateHasPrCoverage(candidate)
+      ? "Linked/open PR exists"
+      : "Not suitable for this queue";
+    const note = window.prompt(
+      "Reject this issue from your local Claw Queue?",
+      reason || fallbackReason,
+    );
+    if (note === null) return;
+    const key = openClawRejectedIssueKey(candidate);
+    if (!key) return;
+    setOpenClawRejectedIssues((current) => {
+      const next = {
+        ...current,
+        [key]: {
+          key,
+          number: candidate.number,
+          title: candidate.title || "",
+          url: candidate.url || "",
+          reason: note.trim() || fallbackReason,
+          rejectedAt: Date.now(),
+        },
+      };
+      saveOpenClawRejectedIssues(next);
+      return next;
+    });
+  }
+
+  function restoreOpenClawIssue(number) {
+    setOpenClawRejectedIssues((current) => {
+      const next = { ...current };
+      delete next[String(number)];
+      saveOpenClawRejectedIssues(next);
+      return next;
+    });
+  }
+
   const props = {
     state,
     appView,
@@ -1280,6 +1326,9 @@ function App() {
     refreshWorkflow,
     updatePolicy,
     openClawState,
+    openClawRejectedIssues,
+    rejectOpenClawIssue,
+    restoreOpenClawIssue,
     openClawRunner,
     loadOpenClawWorkflow,
     updateOpenClawPreferences,
@@ -1684,7 +1733,7 @@ function OpenClawPage(props) {
   const workflow = props.openClawState.data;
   const preferences = workflow?.preferences;
   const governor = workflow?.governor;
-  const queues = workflow?.queues || [];
+  const queues = filterOpenClawRejectedQueues(workflow?.queues || [], props.openClawRejectedIssues);
   const pullRequests = workflow?.pullRequests?.items || [];
   const [actionError, setActionError] = useState("");
   const [busyIssue, setBusyIssue] = useState(null);
@@ -1966,6 +2015,7 @@ function OpenClawPage(props) {
                   onTrack={handleTrackCandidate}
                   onStartCodex={handleStartCandidate}
                   onCreate={handleCreateCandidate}
+                  onReject={props.rejectOpenClawIssue}
                   onRefresh={() => props.loadOpenClawWorkflow({ skipLocalCoverage: true })}
                   onOpenGithubBlade={props.openGithubBlade}
                 />
@@ -1986,6 +2036,10 @@ function OpenClawPage(props) {
           />
         </aside>
       </section>
+      <OpenClawRejectedIssuesPanel
+        rejected={props.openClawRejectedIssues}
+        onRestore={props.restoreOpenClawIssue}
+      />
     </section>
   );
 }
@@ -1994,7 +2048,7 @@ function OpenClawLoopPage(props) {
   const workflow = props.openClawState.data;
   const preferences = workflow?.preferences;
   const governor = workflow?.governor;
-  const queues = workflow?.queues || [];
+  const queues = filterOpenClawRejectedQueues(workflow?.queues || [], props.openClawRejectedIssues);
   const pullRequests = workflow?.pullRequests?.items || [];
   return (
     <section class="openclaw-page openclaw-loop-page" aria-label="Master Loop">
@@ -2032,6 +2086,9 @@ function OpenClawLoopPage(props) {
         runner={props.openClawRunner}
         pullRequests={pullRequests}
         governor={governor}
+        rejected={props.openClawRejectedIssues}
+        onReject={props.rejectOpenClawIssue}
+        onRestore={props.restoreOpenClawIssue}
         onOpenGithubBlade={props.openGithubBlade}
       />
       <OpenClawActiveWorkPanel
@@ -2777,7 +2834,16 @@ function OpenClawWorkerRunway({
   );
 }
 
-function OpenClawMasterLoopPanel({ queues, runner, pullRequests, governor, onOpenGithubBlade }) {
+function OpenClawMasterLoopPanel({
+  queues,
+  runner,
+  pullRequests,
+  governor,
+  rejected,
+  onReject,
+  onRestore,
+  onOpenGithubBlade,
+}) {
   const loop = openClawMasterLoopPlan({ queues, runner, pullRequests, governor });
   const openItemBlade = (item) =>
     onOpenGithubBlade({
@@ -2858,6 +2924,19 @@ function OpenClawMasterLoopPanel({ queues, runner, pullRequests, governor, onOpe
                         <Icon name="panel-right-open" />
                         Blade
                       </button>
+                      {item.candidate ? (
+                        <button
+                          type="button"
+                          class="danger-subtle"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onReject(item.candidate);
+                          }}
+                        >
+                          <Icon name="x" />
+                          Reject
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         onClick={(event) => {
@@ -2876,6 +2955,41 @@ function OpenClawMasterLoopPanel({ queues, runner, pullRequests, governor, onOpe
                 <div class="empty">No items.</div>
               )}
             </div>
+          </article>
+        ))}
+      </div>
+      <OpenClawRejectedIssuesPanel rejected={rejected} onRestore={onRestore} compact />
+    </section>
+  );
+}
+
+function OpenClawRejectedIssuesPanel({ rejected, onRestore, compact = false }) {
+  const items = Object.entries(rejected || {})
+    .map(([key, item]) => ({ ...item, key: item.key || key }))
+    .sort((left, right) => Number(right.rejectedAt || 0) - Number(left.rejectedAt || 0));
+  if (!items.length) return null;
+  const visibleItems = compact ? items.slice(0, 4) : items;
+  return (
+    <section class={`rejected-issues ${compact ? "compact" : ""}`}>
+      <header>
+        <div>
+          <div class="section-kicker">LOCAL REJECTS</div>
+          <h2>Hidden from your queue</h2>
+        </div>
+        <span class="chip">{items.length}</span>
+      </header>
+      <div class="rejected-issue-list">
+        {visibleItems.map((item) => (
+          <article class="rejected-issue" key={item.key}>
+            <div>
+              <strong>
+                #{item.number} {item.title || "OpenClaw issue"}
+              </strong>
+              <small>{item.reason || "Rejected locally"}</small>
+            </div>
+            <button type="button" onClick={() => onRestore(item.key)}>
+              Restore
+            </button>
           </article>
         ))}
       </div>
@@ -3565,6 +3679,7 @@ function OpenClawQueue({
   onTrack,
   onStartCodex,
   onCreate,
+  onReject,
   onRefresh,
   onOpenGithubBlade,
 }) {
@@ -3659,6 +3774,15 @@ function OpenClawQueue({
                     }
                   >
                     <Icon name="panel-right-open" />
+                  </button>
+                  <button
+                    type="button"
+                    class="danger-subtle"
+                    onClick={() => onReject(candidate)}
+                    title="Reject this issue from your local Claw Queue."
+                  >
+                    <Icon name="x" />
+                    Reject
                   </button>
                   <button onClick={() => onCopyPrompt(candidate, candidateEffort, candidateProof)}>
                     <Icon name="copy" />
@@ -4191,6 +4315,53 @@ function loadOpenClawRunnerSettings() {
       trackingIssue: null,
     };
   }
+}
+
+function loadOpenClawRejectedIssues() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(openClawRejectedIssuesStorageKey) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveOpenClawRejectedIssues(rejected) {
+  try {
+    localStorage.setItem(openClawRejectedIssuesStorageKey, JSON.stringify(rejected || {}));
+  } catch {}
+}
+
+function openClawRejectedIssueCount(rejected) {
+  return Object.keys(rejected || {}).length;
+}
+
+function openClawRejectedIssueNumbersForRepo(rejected, repo) {
+  const normalizedRepo = openClawNormalizeRepo(repo) || "openclaw/openclaw";
+  return Object.entries(rejected || {})
+    .filter(([key]) => String(key).includes(`/${normalizedRepo}#`))
+    .map(([, item]) => Number(item?.number))
+    .filter((number) => Number.isFinite(number) && number > 0)
+    .map((number) => Math.trunc(number));
+}
+
+function openClawIssueRejected(rejected, candidate) {
+  const key = openClawRejectedIssueKey(candidate);
+  return Boolean(key && rejected?.[key]);
+}
+
+function filterOpenClawRejectedQueues(queues, rejected) {
+  const hasRejected = openClawRejectedIssueCount(rejected) > 0;
+  return (Array.isArray(queues) ? queues : []).map((queue) => ({
+    ...queue,
+    candidates: (queue.candidates || [])
+      .filter((candidate) => !hasRejected || !openClawIssueRejected(rejected, candidate))
+      .slice(0, openClawVisibleQueueCandidateLimit),
+  }));
+}
+
+function openClawRejectedIssueKey(candidate) {
+  return openClawIssueKey(candidate?.number, candidate?.url);
 }
 
 function openClawRunnerHasIssueRun(runner, issueNumber, issueUrl) {
@@ -5383,6 +5554,7 @@ function openClawCandidateLoopItem(candidate) {
     id: `issue-${candidate.number}`,
     title: `#${candidate.number} ${candidate.title}`,
     url: candidate.url,
+    candidate,
     badge: openClawCandidatePriorityLabel(candidate),
     tone: candidate.signals?.readyForPickup ? "ok" : "warn",
     detail: openClawCandidateWhy(candidate),

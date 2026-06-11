@@ -75,6 +75,7 @@ Open `/app/claw-queue` when you want OpenClaw issue triage instead of a generic 
 - Start or safe Track posts a marker-backed "working on this" issue claim through your local `gh` auth before the Codex run is launched or recorded; coverage-investigation tracks do not pretend the issue is claimed.
 - Use Command Center first; it picks the next eligible issue, active plate, or blocked state.
 - Use `/app/claw-loop` for the full-width Master Loop swimlanes across ready issues, validation, coding, PR readiness, handoff, and completed work.
+- Reject unsuitable queue candidates from Claw Queue or Loop to hide them locally with a reason, then restore them from the Local rejects panel if needed.
 - Use Active Work to track parallel Codex/tmux/app sessions, copy each Codex worktree path, watch local run logs, and keep each PR visible until it is ready, parked, or archived.
 - When the local bridge is connected, Claw Queue can use Gitcrawl's local OpenClaw store for broad queue rows, possible PR coverage, authored open PR rows, and cached check hints while live GitHub remains the final source for claims, PR-limit gates, PR updates, and CI truth.
 - Start Codex runs include a bounded local skill packet from `%USERPROFILE%\.codex\skills` and the common OpenClaw maintainer skills checkout by default, so workers know where the relevant OpenClaw, Gitcrawl, Tokenjuice, Crabbox, ClawSweeper, PR review, security, CI, and Codex review skills live on the machine.

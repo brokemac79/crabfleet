@@ -876,7 +876,7 @@
       }
       .dashboard-grid {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
         gap: 16px;
       }
       .fleet-control-panel {
@@ -2776,6 +2776,56 @@
         width: 13px;
         height: 13px;
       }
+      .rejected-issues {
+        display: grid;
+        gap: 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 12px;
+      }
+      .rejected-issues.compact {
+        margin-top: 12px;
+      }
+      .rejected-issues header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .rejected-issues h2 {
+        margin: 3px 0 0;
+        color: var(--ink);
+        font-size: 16px;
+      }
+      .rejected-issue-list {
+        display: grid;
+        gap: 8px;
+      }
+      .rejected-issue {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--panel-2);
+        padding: 8px;
+      }
+      .rejected-issue strong {
+        display: block;
+        overflow: hidden;
+        color: var(--ink);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+      }
+      .rejected-issue small {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 11px;
+      }
       .openclaw-active-work {
         display: grid;
         gap: 10px;
@@ -3329,7 +3379,7 @@
         align-items: center;
         justify-content: flex-end;
         flex-wrap: wrap;
-        max-width: 470px;
+        max-width: 560px;
       }
       .candidate-actions button.icon-only {
         width: 36px;
@@ -3337,6 +3387,15 @@
       }
       .candidate-actions button {
         white-space: nowrap;
+      }
+      button.danger-subtle {
+        border-color: rgb(239 68 68 / 0.34);
+        background: rgb(239 68 68 / 0.08);
+        color: #fca5a5;
+      }
+      button.danger-subtle:hover {
+        border-color: rgb(239 68 68 / 0.52);
+        background: rgb(239 68 68 / 0.14);
       }
       .chip.ok {
         border-color: rgb(16 185 129 / 0.28);
