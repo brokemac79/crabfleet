@@ -1560,39 +1560,42 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .github-blade-frame-wrap {
-        position: relative;
+      .github-blade-preview {
         min-height: 0;
-        background: var(--panel-2);
+        overflow: auto;
+        background: var(--paper);
+        padding: 18px 20px 24px;
       }
-      .github-blade-frame-wrap iframe {
-        position: absolute;
-        inset: 0;
-        z-index: 1;
-        width: 100%;
-        height: 100%;
-        border: 0;
-        background: #ffffff;
-      }
-      .github-blade-fallback {
-        position: absolute;
-        right: 18px;
-        bottom: 18px;
-        left: 18px;
-        z-index: 2;
+      .github-blade-card {
         display: grid;
-        place-content: center start;
-        justify-items: center;
+        gap: 14px;
+      }
+      .github-blade-meta,
+      .github-blade-labels {
+        display: flex;
+        flex-wrap: wrap;
         gap: 6px;
+      }
+      .github-blade-body {
+        min-width: 0;
         border: 1px solid var(--line);
         border-radius: 8px;
-        background: rgb(0 0 0 / 0.72);
-        color: var(--muted);
-        padding: 10px 12px;
-        font-size: 13px;
+        background: rgb(255 255 255 / 0.03);
       }
-      .github-blade-fallback strong {
+      .github-blade-body pre {
+        overflow: auto;
+        max-height: calc(100vh - 330px);
+        margin: 0;
+        padding: 14px;
         color: var(--ink);
+        white-space: pre-wrap;
+        word-break: break-word;
+        font:
+          12px/1.55 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
       }
       .form-grid {
         display: grid;

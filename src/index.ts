@@ -183,6 +183,7 @@ type GitHubIssuePayload = {
   html_url: string;
   body: string | null;
   user: { login: string } | null;
+  labels?: Array<GitHubLabelPayload | string>;
   updated_at: string;
   pull_request?: unknown;
 };
@@ -1472,6 +1473,11 @@ async function api(request: Request, env: RuntimeEnv): Promise<Response> {
     return json(await readOpenClawIssue(request, env, user));
   }
 
+  if (request.method === "GET" && url.pathname === "/api/openclaw/github-preview") {
+    requireRole(user, "viewer");
+    return json(await readOpenClawGitHubPreview(request, env, user));
+  }
+
   if (request.method === "PUT" && url.pathname === "/api/openclaw/preferences") {
     requireRole(user, "viewer");
     return json(await updateOpenClawPreferences(request, env, user));
@@ -2536,6 +2542,62 @@ async function readOpenClawIssue(
     },
     coverageError: coverage.error,
   };
+}
+
+async function readOpenClawGitHubPreview(
+  request: Request,
+  env: RuntimeEnv,
+  _user: User,
+): Promise<Record<string, unknown>> {
+  const url = new URL(request.url);
+  const target = parseGitHubIssueOrPullUrl(url.searchParams.get("url"));
+  const token = await openClawWorkflowGitHubToken(request, env, target.repo);
+  const issue = await githubApi<GitHubIssuePayload>(
+    token,
+    `/repos/${target.repo}/issues/${target.number}`,
+  );
+  const isPullRequest = target.kind === "pull" || Boolean(issue.pull_request);
+  return {
+    repo: target.repo,
+    number: issue.number,
+    title: issue.title,
+    url: issue.html_url,
+    kind: isPullRequest ? "GitHub PR" : "GitHub issue",
+    state: issue.state,
+    author: issue.user?.login ?? null,
+    labels: gitHubLabelNames(issue.labels),
+    updatedAt: issue.updated_at,
+    body: clean(issue.body, 12000),
+  };
+}
+
+function parseGitHubIssueOrPullUrl(value: string | null): {
+  repo: string;
+  number: number;
+  kind: "issues" | "pull";
+} {
+  const text = clean(value, 500).trim();
+  if (!text) throw badRequest("missing GitHub URL");
+  let parsed: URL;
+  try {
+    parsed = new URL(text);
+  } catch {
+    throw badRequest("invalid GitHub URL");
+  }
+  if (parsed.hostname.toLowerCase() !== "github.com") {
+    throw badRequest("expected a github.com issue or pull request URL");
+  }
+  const [owner, repo, kind, numberText] = parsed.pathname.split("/").filter(Boolean);
+  if (!owner || !repo || (kind !== "issues" && kind !== "pull")) {
+    throw badRequest("expected a GitHub issue or pull request URL");
+  }
+  const number = Number(numberText);
+  if (!Number.isInteger(number) || number <= 0) {
+    throw badRequest("expected a GitHub issue or pull request number");
+  }
+  const normalizedRepo = normalizeGitHubRepo(`${owner}/${repo}`);
+  if (!normalizedRepo) throw badRequest("invalid GitHub repository");
+  return { repo: normalizedRepo, number, kind };
 }
 
 function parseOpenClawIssueInput(

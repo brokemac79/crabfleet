@@ -2303,11 +2303,18 @@ function OpenClawRunnerPanel({ runner, preferences, onChange, onCheck }) {
         ) : null}
         {invalidToken ? (
           <button type="button" onClick={generateRunnerToken}>
-            New token
+            New token + command
           </button>
         ) : null}
       </div>
       {runner?.error ? <div class="workflow-banner error">{runner.error}</div> : null}
+      {invalidToken ? (
+        <div class="workflow-banner">
+          The bridge is reachable, but the saved token does not match the running runner. If the
+          runner was started without a token, use Clear token. Otherwise use New token + command,
+          restart the runner with the copied command, then click Test.
+        </div>
+      ) : null}
       {runner?.info?.dryRun ? (
         <div class="workflow-banner">
           Dry-run bridge: Start Codex records prompts and active-work rows without launching Codex.
@@ -7309,14 +7316,46 @@ function Drawer({ id, open, title, wide, onClose, children }) {
 
 function GithubBlade({ blade, onClose }) {
   const open = Boolean(blade?.url);
+  const [preview, setPreview] = useState({
+    url: "",
+    loading: false,
+    data: null,
+    error: "",
+  });
+  useEffect(() => {
+    if (!blade?.url) {
+      setPreview({ url: "", loading: false, data: null, error: "" });
+      return;
+    }
+    let cancelled = false;
+    const url = blade.url;
+    setPreview({ url, loading: true, data: null, error: "" });
+    api(`/api/openclaw/github-preview?url=${encodeURIComponent(url)}`)
+      .then((data) => {
+        if (!cancelled) setPreview({ url, loading: false, data, error: "" });
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setPreview({
+            url,
+            loading: false,
+            data: null,
+            error: error.message || "Could not load GitHub preview",
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [blade?.url]);
   return (
     <aside class={`github-blade ${open ? "open" : ""}`} aria-hidden={open ? "false" : "true"}>
       <section class="github-blade-panel" aria-label="GitHub blade">
         <header class="github-blade-head">
           <div>
             <span class="section-kicker">GITHUB BLADE</span>
-            <h2>{blade?.title || "GitHub"}</h2>
-            {blade?.kind ? <p>{blade.kind}</p> : null}
+            <h2>{preview.data?.title || blade?.title || "GitHub"}</h2>
+            <p>{preview.data?.kind || blade?.kind || "GitHub link"}</p>
           </div>
           <button class="icon" aria-label="Close GitHub blade" onClick={onClose}>
             <Icon name="x" />
@@ -7337,22 +7376,65 @@ function GithubBlade({ blade, onClose }) {
             <div class="github-blade-url">
               <code>{blade.url}</code>
             </div>
-            <div class="github-blade-frame-wrap">
-              <iframe
-                title={blade.title || "GitHub preview"}
-                src={blade.url}
-                sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
-              />
-              <div class="github-blade-fallback">
-                <strong>GitHub may block embedded previews.</strong>
-                <span>Use Open GitHub if this panel stays blank.</span>
-              </div>
+            <div class="github-blade-preview">
+              {preview.loading ? (
+                <div class="empty">Loading GitHub preview...</div>
+              ) : preview.error ? (
+                <div class="workflow-banner error">
+                  {preview.error}. Use Open GitHub for the live page.
+                </div>
+              ) : preview.data ? (
+                <GitHubBladePreview preview={preview.data} />
+              ) : (
+                <div class="empty">Open a GitHub issue or PR to preview it here.</div>
+              )}
             </div>
           </>
         ) : null}
       </section>
     </aside>
   );
+}
+
+function GitHubBladePreview({ preview }) {
+  const labels = Array.isArray(preview.labels) ? preview.labels : [];
+  return (
+    <article class="github-blade-card">
+      <div class="github-blade-meta">
+        <span class={`chip ${preview.state === "open" ? "ok" : "warn"}`}>
+          {preview.state || "unknown"}
+        </span>
+        <span class="chip">
+          {preview.repo}#{preview.number}
+        </span>
+        {preview.author ? <span class="chip">@{preview.author}</span> : null}
+        {preview.updatedAt ? (
+          <span class="chip">updated {githubBladeDate(preview.updatedAt)}</span>
+        ) : null}
+      </div>
+      {labels.length ? (
+        <div class="github-blade-labels">
+          {labels.slice(0, 18).map((label) => (
+            <span class="chip" key={label}>
+              {label}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div class="github-blade-body">
+        {preview.body ? <pre>{preview.body}</pre> : <div class="empty">No body text.</div>}
+      </div>
+    </article>
+  );
+}
+
+function githubBladeDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || "");
+  return date.toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }
 
 function Icon({ name }) {
