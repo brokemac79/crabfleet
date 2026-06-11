@@ -22,7 +22,7 @@ const codePlaceholderPattern = new RegExp(`${codePlaceholder}(\\d+)${codePlaceho
 
 const sections = [
   ["Start", ["index.md", "quickstart.md", "architecture.md"]],
-  ["Features", ["cards.md", "runs.md", "admin.md"]],
+  ["Features", ["claw-queue.md", "cards.md", "runs.md", "admin.md"]],
   ["Reference", ["api.md", "spec.md"]],
 ];
 
@@ -47,6 +47,10 @@ const pages = allPages.filter((page) => !buildExcludes.some((re) => re.test(page
 const pageMap = new Map(pages.map((page) => [page.rel, page]));
 const permalinkMap = new Map();
 for (const page of pages) {
+  const implicitPermalink = implicitPagePermalink(page);
+  if (implicitPermalink) {
+    permalinkMap.set(normalizePermalink(implicitPermalink), page);
+  }
   if (page.frontmatter.permalink) {
     permalinkMap.set(normalizePermalink(page.frontmatter.permalink), page);
   }
@@ -223,6 +227,17 @@ function outPath(rel, frontmatter = {}) {
   if (rel === "README.md") return "index.html";
   if (rel.endsWith("/README.md")) return rel.replace(/README\.md$/, "index.html");
   return rel.replace(/\.md$/, ".html");
+}
+
+function implicitPagePermalink(page) {
+  if (page.outRel === "index.html") return "/";
+  if (page.outRel.endsWith("/index.html")) {
+    return `/${page.outRel.slice(0, -"/index.html".length)}/`;
+  }
+  if (page.outRel.endsWith(".html")) {
+    return `/${page.outRel.slice(0, -".html".length)}/`;
+  }
+  return null;
 }
 
 function firstHeading(markdown) {

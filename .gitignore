@@ -4,3 +4,4 @@ src/generated.ts
 dist/
 .wrangler/
 .pnpm-store/
+.artifacts/

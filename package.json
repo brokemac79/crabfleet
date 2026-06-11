@@ -12,6 +12,7 @@
     "check": "node scripts/generate-assets.mjs && tsgo --noEmit && oxlint --ignore-pattern node_modules --ignore-pattern src/generated.ts . && oxfmt --check .",
     "check:changed": "pnpm run check",
     "test:changed": "pnpm run test",
+    "openclaw:runner": "node scripts/openclaw-codex-runner.mjs",
     "crabbox:hydrate": "crabbox actions hydrate",
     "crabbox:run": "crabbox run",
     "crabbox:stop": "crabbox stop",
