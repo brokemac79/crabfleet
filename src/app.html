@@ -1597,6 +1597,59 @@
           Consolas,
           monospace;
       }
+      .github-blade-comments {
+        display: grid;
+        gap: 10px;
+      }
+      .github-blade-comments header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .github-blade-comments h3 {
+        margin: 0;
+        color: var(--ink);
+        font-size: 15px;
+        font-weight: 760;
+      }
+      .github-blade-comment-list {
+        display: grid;
+        gap: 10px;
+      }
+      .github-blade-comment {
+        display: grid;
+        gap: 8px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgb(255 255 255 / 0.03);
+        padding: 12px;
+      }
+      .github-blade-comment-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .github-blade-comment-head strong {
+        color: var(--ink);
+      }
+      .github-blade-comment pre {
+        overflow: auto;
+        max-height: 360px;
+        margin: 0;
+        color: var(--ink);
+        white-space: pre-wrap;
+        word-break: break-word;
+        font:
+          12px/1.55 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+      }
       .form-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;

@@ -188,6 +188,36 @@ type GitHubIssuePayload = {
   pull_request?: unknown;
 };
 
+type GitHubIssueCommentPayload = {
+  id: number;
+  html_url: string;
+  body: string | null;
+  user: { login: string } | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type GitHubPullReviewPayload = {
+  id: number;
+  html_url: string;
+  body: string | null;
+  state: string;
+  user: { login: string } | null;
+  submitted_at: string | null;
+};
+
+type GitHubPullReviewCommentPayload = {
+  id: number;
+  html_url: string;
+  body: string | null;
+  user: { login: string } | null;
+  created_at: string;
+  updated_at: string;
+  path?: string;
+  line?: number | null;
+  original_line?: number | null;
+};
+
 type GitHubLabelPayload = {
   name: string;
 };
@@ -2557,6 +2587,59 @@ async function readOpenClawGitHubPreview(
     `/repos/${target.repo}/issues/${target.number}`,
   );
   const isPullRequest = target.kind === "pull" || Boolean(issue.pull_request);
+  const issueCommentsPromise = githubApi<GitHubIssueCommentPayload[]>(
+    token,
+    `/repos/${target.repo}/issues/${target.number}/comments?per_page=40`,
+  );
+  const [issueComments, pullReviews, pullReviewComments] = isPullRequest
+    ? await Promise.all([
+        issueCommentsPromise,
+        githubApi<GitHubPullReviewPayload[]>(
+          token,
+          `/repos/${target.repo}/pulls/${target.number}/reviews?per_page=40`,
+        ),
+        githubApi<GitHubPullReviewCommentPayload[]>(
+          token,
+          `/repos/${target.repo}/pulls/${target.number}/comments?per_page=40`,
+        ),
+      ])
+    : [await issueCommentsPromise, [], []];
+  const comments = [
+    ...issueComments.map((comment) => ({
+      id: comment.id,
+      kind: "Conversation",
+      url: comment.html_url,
+      author: comment.user?.login ?? null,
+      createdAt: comment.created_at,
+      updatedAt: comment.updated_at,
+      body: clean(comment.body, 12000),
+    })),
+    ...pullReviews
+      .filter((review) => review.body || review.state)
+      .map((review) => ({
+        id: review.id,
+        kind: `Review ${review.state.toLowerCase()}`,
+        url: review.html_url,
+        author: review.user?.login ?? null,
+        createdAt: review.submitted_at,
+        updatedAt: review.submitted_at,
+        body: clean(review.body || `Review submitted: ${review.state}`, 12000),
+      })),
+    ...pullReviewComments.map((comment) => {
+      const line = comment.line ?? comment.original_line;
+      const location = comment.path ? `${comment.path}${line ? `:${line}` : ""}` : "";
+      const body = location ? `${location}\n\n${comment.body ?? ""}` : comment.body;
+      return {
+        id: comment.id,
+        kind: "Review comment",
+        url: comment.html_url,
+        author: comment.user?.login ?? null,
+        createdAt: comment.created_at,
+        updatedAt: comment.updated_at,
+        body: clean(body, 12000),
+      };
+    }),
+  ].sort((a, b) => Date.parse(a.createdAt ?? "") - Date.parse(b.createdAt ?? ""));
   return {
     repo: target.repo,
     number: issue.number,
@@ -2568,6 +2651,7 @@ async function readOpenClawGitHubPreview(
     labels: gitHubLabelNames(issue.labels),
     updatedAt: issue.updated_at,
     body: clean(issue.body, 12000),
+    comments,
   };
 }
 

@@ -7398,6 +7398,7 @@ function GithubBlade({ blade, onClose }) {
 
 function GitHubBladePreview({ preview }) {
   const labels = Array.isArray(preview.labels) ? preview.labels : [];
+  const comments = Array.isArray(preview.comments) ? preview.comments : [];
   return (
     <article class="github-blade-card">
       <div class="github-blade-meta">
@@ -7424,6 +7425,37 @@ function GitHubBladePreview({ preview }) {
       <div class="github-blade-body">
         {preview.body ? <pre>{preview.body}</pre> : <div class="empty">No body text.</div>}
       </div>
+      <section class="github-blade-comments" aria-label="GitHub comments">
+        <header>
+          <h3>Comments</h3>
+          <span class="chip">{comments.length}</span>
+        </header>
+        {comments.length ? (
+          <div class="github-blade-comment-list">
+            {comments.map((comment) => (
+              <article class="github-blade-comment" key={comment.id || comment.url}>
+                <div class="github-blade-comment-head">
+                  <strong>{comment.author ? `@${comment.author}` : "GitHub user"}</strong>
+                  {comment.kind ? <span class="chip">{comment.kind}</span> : null}
+                  <span>{comment.createdAt ? githubBladeDate(comment.createdAt) : ""}</span>
+                  {comment.url ? (
+                    <button
+                      type="button"
+                      class="text-link inline"
+                      onClick={() => window.open(comment.url, "_blank", "noopener")}
+                    >
+                      Open
+                    </button>
+                  ) : null}
+                </div>
+                <pre>{comment.body || "No comment text."}</pre>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div class="empty">No comments yet.</div>
+        )}
+      </section>
     </article>
   );
 }
